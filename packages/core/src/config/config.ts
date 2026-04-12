@@ -361,6 +361,12 @@ export interface ConfigParameters {
   userMemory?: string;
   geminiMdFileCount?: number;
   approvalMode?: ApprovalMode;
+  /**
+   * When true, YOLO mode will auto-approve ALL commands, including those
+   * matching dangerous patterns (code execution, network, system ops).
+   * Use with extreme caution.
+   */
+  dangerouslyAllowAll?: boolean;
   contextFileName?: string | string[];
   accessibility?: AccessibilitySettings;
   telemetry?: TelemetrySettings;
@@ -595,6 +601,7 @@ export class Config {
   private conditionalRulesRegistry: ConditionalRulesRegistry | undefined;
   private readonly contextRuleExcludes: string[];
   private approvalMode: ApprovalMode;
+  private readonly dangerouslyAllowAll: boolean;
   private prePlanMode?: ApprovalMode;
   private readonly accessibility: AccessibilitySettings;
   private readonly telemetrySettings: TelemetrySettings;
@@ -734,6 +741,7 @@ export class Config {
     this.geminiMdFileCount = params.geminiMdFileCount ?? 0;
     this.contextRuleExcludes = params.contextRuleExcludes ?? [];
     this.approvalMode = params.approvalMode ?? ApprovalMode.DEFAULT;
+    this.dangerouslyAllowAll = params.dangerouslyAllowAll ?? false;
     this.accessibility = params.accessibility ?? {};
     this.telemetrySettings = {
       enabled: params.telemetry?.enabled ?? false,
@@ -1862,6 +1870,10 @@ export class Config {
 
   getApprovalMode(): ApprovalMode {
     return this.approvalMode;
+  }
+
+  getDangerouslyAllowAll(): boolean {
+    return this.dangerouslyAllowAll;
   }
 
   /**
