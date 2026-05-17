@@ -54,7 +54,6 @@ import {
   getPlanModeSystemReminder,
   getSubagentSystemReminder,
   getArenaSystemReminder,
-  STARTUP_CONTEXT_MODEL_ACK,
   evaluatePermissionFlow,
   needsConfirmation,
   isPlanModeBlocked,
@@ -100,6 +99,12 @@ import {
 import { isSlashCommand } from '../../ui/utils/commandUtils.js';
 import { CommandKind } from '../../ui/commands/types.js';
 import { parseAcpModelOption } from '../../utils/acpModelUtils.js';
+import {
+  getApiUserTextIndices,
+  hasCompressionSummaryPair,
+  hasStartupContext,
+  isApiUserTextContent,
+} from '../../utils/apiHistoryUtils.js';
 import { classifyApiError } from '../../ui/hooks/useGeminiStream.js';
 import { getPersistScopeForModelSelection } from '../../config/modelProvidersScope.js';
 
@@ -129,6 +134,19 @@ type AutoCompressionSendResult =
   | { responseStream: AsyncGenerator<StreamEvent>; stopReason?: never }
   | { responseStream: null; stopReason: PromptResponse['stopReason'] };
 
+export interface HistorySnapshot {
+  history: Content[];
+  modelFacingUserTurnCount: number;
+}
+
+function computeVisibleModelFacingUserTurnCount(apiHistory: Content[]): number {
+  const startIndex = hasStartupContext(apiHistory) ? 2 : 0;
+  if (hasCompressionSummaryPair(apiHistory, startIndex)) {
+    return getApiUserTextIndices(apiHistory, startIndex + 2, true).length;
+  }
+  return getApiUserTextIndices(apiHistory, startIndex, true).length;
+}
+
 export function computeInitialTurnFromHistory(
   records: ChatRecord[],
   sessionId: string,
@@ -157,6 +175,16 @@ export function computeInitialTurnFromHistory(
   }
 
   return maxPromptTurn > 0 ? maxPromptTurn : userMessageCount;
+}
+
+export function computeInitialModelFacingUserTurnCountFromHistory(
+  records: ChatRecord[],
+  sessionId: string,
+): number {
+  return records.filter(
+    (record) =>
+      record.sessionId === sessionId && isModelFacingUserPromptRecord(record),
+  ).length;
 }
 
 function getRecordPromptIds(record: ChatRecord): string[] {
@@ -193,6 +221,35 @@ function isUserPromptRecord(record: ChatRecord): boolean {
       (part) => typeof part.text === 'string' && part.text.trim().length > 0,
     ) ?? false
   );
+}
+
+function isModelFacingUserPromptRecord(record: ChatRecord): boolean {
+  if (record.type !== 'user') {
+    return false;
+  }
+  if (
+    record.subtype === 'notification' ||
+    record.subtype === 'mid_turn_user_message'
+  ) {
+    return false;
+  }
+  const textParts =
+    record.message?.parts
+      ?.filter(
+        (part): part is { text: string } & Part =>
+          'text' in part &&
+          typeof part.text === 'string' &&
+          part.text.trim().length > 0,
+      )
+      .map((part) => part.text.trim()) ?? [];
+  if (textParts.length === 0) {
+    return false;
+  }
+  if (record.subtype === 'cron') {
+    return true;
+  }
+  const fullText = textParts.join(' ');
+  return !fullText.startsWith('?') && !isSlashCommand(fullText);
 }
 
 export interface AvailableCommandsSnapshot {
@@ -264,6 +321,7 @@ export class Session implements SessionContext {
    */
   private pendingPromptCompletion: Promise<void> | null = null;
   private turn: number = 0;
+  private modelFacingUserTurnCount: number = 0;
   private readonly runtimeBaseDir: string;
 
   // Cron scheduling state
@@ -351,6 +409,13 @@ export class Session implements SessionContext {
       this.turn,
       computeInitialTurnFromHistory(records, this.config.getSessionId()),
     );
+    this.modelFacingUserTurnCount = Math.max(
+      this.modelFacingUserTurnCount,
+      computeInitialModelFacingUserTurnCountFromHistory(
+        records,
+        this.config.getSessionId(),
+      ),
+    );
     await this.historyReplayer.replay(records);
   }
 
@@ -388,6 +453,9 @@ export class Session implements SessionContext {
 
     chat.truncateHistory(apiTruncateIndex);
     chat.stripThoughtsFromHistory();
+    // targetTurnIndex is zero-based; after truncating before that turn,
+    // exactly targetTurnIndex model-facing user turns remain.
+    this.modelFacingUserTurnCount = targetTurnIndex;
 
     this.config.getChatRecordingService()?.rewindRecording(targetTurnIndex, {
       truncatedCount: Math.max(0, apiHistory.length - apiTruncateIndex),
@@ -396,11 +464,14 @@ export class Session implements SessionContext {
     return { targetTurnIndex, apiTruncateIndex };
   }
 
-  captureHistorySnapshot(): Content[] {
-    return this.config.getGeminiClient()!.getChat().getHistory();
+  captureHistorySnapshot(): HistorySnapshot {
+    return {
+      history: this.config.getGeminiClient()!.getChat().getHistory(),
+      modelFacingUserTurnCount: this.modelFacingUserTurnCount,
+    };
   }
 
-  restoreHistory(history: Content[]): void {
+  restoreHistory(snapshot: Content[] | HistorySnapshot): void {
     if (this.pendingPrompt || this.cronProcessing || this.cronAbortController) {
       throw RequestError.invalidParams(
         undefined,
@@ -408,60 +479,57 @@ export class Session implements SessionContext {
       );
     }
 
+    const history = Array.isArray(snapshot) ? snapshot : snapshot.history;
     this.config
       .getGeminiClient()!
       .getChat()
       .setHistory(structuredClone(history));
+    this.modelFacingUserTurnCount = Array.isArray(snapshot)
+      ? computeVisibleModelFacingUserTurnCount(history)
+      : snapshot.modelFacingUserTurnCount;
   }
 
   #computeApiTruncationIndexForUserTurn(
     apiHistory: Content[],
     targetTurnIndex: number,
   ): number {
-    const startIndex = this.#hasStartupContext(apiHistory) ? 2 : 0;
+    const startIndex = hasStartupContext(apiHistory) ? 2 : 0;
+
+    if (hasCompressionSummaryPair(apiHistory, startIndex)) {
+      const apiTailUserIndices = getApiUserTextIndices(
+        apiHistory,
+        startIndex + 2,
+        true,
+      );
+      if (this.modelFacingUserTurnCount < targetTurnIndex + 1) {
+        debugLogger.warn(
+          `Cannot rewind to user turn ${targetTurnIndex}; ` +
+            `model-facing user turn count is ${this.modelFacingUserTurnCount}.`,
+        );
+        return -1;
+      }
+      const totalUserTurns = this.modelFacingUserTurnCount;
+      const compressedTurnCount = Math.max(
+        0,
+        totalUserTurns - apiTailUserIndices.length,
+      );
+
+      if (targetTurnIndex < compressedTurnCount) {
+        return -1;
+      }
+
+      // Defensive: the guard above should keep this index in range.
+      return apiTailUserIndices[targetTurnIndex - compressedTurnCount] ?? -1;
+    }
 
     if (targetTurnIndex === 0) {
       return startIndex;
     }
 
-    let realUserPromptCount = 0;
-    for (let i = startIndex; i < apiHistory.length; i++) {
-      if (!this.#isUserTextContent(apiHistory[i]!)) {
-        continue;
-      }
-
-      if (realUserPromptCount === targetTurnIndex) {
-        return i;
-      }
-
-      realUserPromptCount += 1;
-    }
-
-    return -1;
-  }
-
-  #hasStartupContext(apiHistory: Content[]): boolean {
-    if (apiHistory.length < 2) return false;
-    const first = apiHistory[0];
-    const second = apiHistory[1];
-    if (first?.role !== 'user' || second?.role !== 'model') return false;
     return (
-      second.parts?.some(
-        (part) => 'text' in part && part.text === STARTUP_CONTEXT_MODEL_ACK,
-      ) ?? false
+      getApiUserTextIndices(apiHistory, startIndex, false)[targetTurnIndex] ??
+      -1
     );
-  }
-
-  #isUserTextContent(content: Content): boolean {
-    if (content.role !== 'user') return false;
-    if (!content.parts || content.parts.length === 0) return false;
-
-    const hasFunctionResponse = content.parts.some(
-      (part) => 'functionResponse' in part,
-    );
-    if (hasFunctionResponse) return false;
-
-    return content.parts.some((part) => 'text' in part && part.text);
   }
 
   async cancelPendingPrompt(): Promise<void> {
@@ -694,6 +762,7 @@ export class Session implements SessionContext {
         while (nextMessage !== null) {
           if (pendingSend.signal.aborted) {
             this.#getCurrentChat().addHistory(nextMessage);
+            this.#recordModelFacingUserTurn(nextMessage);
             return { stopReason: 'cancelled' };
           }
 
@@ -702,12 +771,17 @@ export class Session implements SessionContext {
           const streamStartTime = Date.now();
 
           try {
+            const recordedModelFacingTurn =
+              this.#recordModelFacingUserTurn(nextMessage);
             const sendResult = await this.#sendMessageStreamWithAutoCompression(
               promptId,
               nextMessage?.parts ?? [],
               pendingSend.signal,
             );
             if (!sendResult.responseStream) {
+              if (sendResult.stopReason !== 'cancelled') {
+                this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+              }
               this.#preserveUnsentMessageHistory(
                 nextMessage,
                 sendResult.stopReason === 'cancelled',
@@ -961,6 +1035,8 @@ export class Session implements SessionContext {
           const streamStartTime = Date.now();
 
           try {
+            const recordedModelFacingTurn =
+              this.#recordModelFacingUserTurn(nextMessage);
             const continueSendResult =
               await this.#sendMessageStreamWithAutoCompression(
                 promptId + '_stop_hook_' + stopHookIterationCount,
@@ -969,6 +1045,9 @@ export class Session implements SessionContext {
                 { skipCompression: stopHookIterationCount > 1 },
               );
             if (!continueSendResult.responseStream) {
+              if (continueSendResult.stopReason !== 'cancelled') {
+                this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+              }
               this.#preserveUnsentMessageHistory(
                 nextMessage,
                 continueSendResult.stopReason === 'cancelled',
@@ -1091,6 +1170,23 @@ export class Session implements SessionContext {
 
   #getCurrentChat(): GeminiChat {
     return this.config.getGeminiClient()!.getChat();
+  }
+
+  #recordModelFacingUserTurn(message: Content): boolean {
+    if (isApiUserTextContent(message)) {
+      this.modelFacingUserTurnCount += 1;
+      return true;
+    }
+    return false;
+  }
+
+  #rollbackModelFacingUserTurn(recorded: boolean): void {
+    if (recorded) {
+      this.modelFacingUserTurnCount = Math.max(
+        0,
+        this.modelFacingUserTurnCount - 1,
+      );
+    }
   }
 
   /**
@@ -1420,12 +1516,17 @@ export class Session implements SessionContext {
               null;
             const streamStartTime = Date.now();
 
+            const recordedModelFacingTurn =
+              this.#recordModelFacingUserTurn(nextMessage);
             const sendResult = await this.#sendMessageStreamWithAutoCompression(
               promptId,
               nextMessage.parts ?? [],
               ac.signal,
             );
             if (!sendResult.responseStream) {
+              if (sendResult.stopReason !== 'cancelled') {
+                this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+              }
               this.#preserveUnsentMessageHistory(
                 nextMessage,
                 sendResult.stopReason === 'cancelled',

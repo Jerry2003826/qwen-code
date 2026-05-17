@@ -78,7 +78,11 @@ import type { ApprovalModeValue } from './session/types.js';
 import { z } from 'zod';
 import type { CliArgs } from '../config/config.js';
 import { loadCliConfig } from '../config/config.js';
-import { Session, buildAvailableCommandsSnapshot } from './session/Session.js';
+import {
+  Session,
+  buildAvailableCommandsSnapshot,
+  type HistorySnapshot,
+} from './session/Session.js';
 import {
   formatAcpModelId,
   parseAcpBaseModelId,
@@ -1732,7 +1736,18 @@ class QwenAgent implements Agent {
             'Invalid or missing sessionId',
           );
         }
-        if (!Array.isArray(history)) {
+        const isHistorySnapshot =
+          !!history &&
+          typeof history === 'object' &&
+          !Array.isArray(history) &&
+          Array.isArray((history as { history?: unknown }).history) &&
+          Number.isSafeInteger(
+            (history as { modelFacingUserTurnCount?: unknown })
+              .modelFacingUserTurnCount,
+          ) &&
+          ((history as { modelFacingUserTurnCount?: unknown })
+            .modelFacingUserTurnCount as number) >= 0;
+        if (!Array.isArray(history) && !isHistorySnapshot) {
           throw RequestError.invalidParams(
             undefined,
             'Invalid or missing history',
@@ -1746,7 +1761,7 @@ class QwenAgent implements Agent {
           );
         }
 
-        session.restoreHistory(history as Content[]);
+        session.restoreHistory(history as Content[] | HistorySnapshot);
         return { success: true };
       }
       case 'getAccountInfo': {

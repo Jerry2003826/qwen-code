@@ -8,7 +8,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { computeInitialTurnFromHistory, Session } from './Session.js';
+import {
+  computeInitialModelFacingUserTurnCountFromHistory,
+  computeInitialTurnFromHistory,
+  Session,
+} from './Session.js';
 import type { Content } from '@google/genai';
 import type { ChatRecord, Config, GeminiChat } from '@qwen-code/qwen-code-core';
 import { ApprovalMode, AuthType } from '@qwen-code/qwen-code-core';
@@ -123,6 +127,50 @@ describe('computeInitialTurnFromHistory', () => {
   });
 });
 
+describe('computeInitialModelFacingUserTurnCountFromHistory', () => {
+  it('counts model-facing user text records without slash-only records', () => {
+    expect(
+      computeInitialModelFacingUserTurnCountFromHistory(
+        [
+          chatRecord({
+            uuid: 'user-1',
+            message: { parts: [{ text: 'first' }] },
+          }),
+          chatRecord({
+            uuid: 'slash-1',
+            message: { parts: [{ text: '/help' }] },
+          }),
+          chatRecord({
+            uuid: 'question-command-1',
+            message: { parts: [{ text: '?help' }] },
+          }),
+          chatRecord({
+            uuid: 'cron-1',
+            subtype: 'cron',
+            message: { parts: [{ text: 'cron prompt' }] },
+          }),
+          chatRecord({
+            uuid: 'mid-turn-1',
+            subtype: 'mid_turn_user_message',
+            message: { parts: [{ text: 'mid-turn prompt text' }] },
+          }),
+          chatRecord({
+            uuid: 'notification-1',
+            subtype: 'notification',
+            message: { parts: [{ text: 'FYI' }] },
+          }),
+          chatRecord({
+            uuid: 'other-session',
+            sessionId: 'other-session-id',
+            message: { parts: [{ text: 'other' }] },
+          }),
+        ],
+        'test-session-id',
+      ),
+    ).toBe(2);
+  });
+});
+
 // Helper to create empty async generator (avoids memory leak from inline generators)
 function createEmptyStream() {
   return (async function* () {})();
@@ -151,6 +199,18 @@ function expectCompressBeforeSend(
   expect(compressMock.mock.invocationCallOrder[callIndex]).toBeLessThan(
     sendMock.mock.invocationCallOrder[callIndex],
   );
+}
+
+function setSessionTurnCounters(
+  targetSession: Session,
+  counters: { turn?: number; modelFacingUserTurnCount?: number },
+) {
+  Object.assign(targetSession as unknown as Record<string, number>, counters);
+}
+
+function getSessionModelFacingUserTurnCount(targetSession: Session): number {
+  return (targetSession as unknown as { modelFacingUserTurnCount: number })
+    .modelFacingUserTurnCount;
 }
 
 describe('Session', () => {
@@ -351,6 +411,214 @@ describe('Session', () => {
       expect(mockChat.truncateHistory).toHaveBeenCalledWith(2);
     });
 
+    it('maps ACP rewind to the uncompressed tail after chat compression', () => {
+      setSessionTurnCounters(session, {
+        turn: 3,
+        modelFacingUserTurnCount: 3,
+      });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ];
+      vi.mocked(mockChat.getHistory).mockReturnValue(history);
+
+      const result = session.rewindToTurn(2);
+
+      expect(result).toEqual({ targetTurnIndex: 2, apiTruncateIndex: 2 });
+      expect(mockChat.truncateHistory).toHaveBeenCalledWith(2);
+    });
+
+    it('keeps compressed tail reachable after rewind and resend', async () => {
+      setSessionTurnCounters(session, {
+        turn: 3,
+        modelFacingUserTurnCount: 3,
+      });
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ]);
+
+      expect(session.rewindToTurn(2)).toEqual({
+        targetTurnIndex: 2,
+        apiTruncateIndex: 2,
+      });
+
+      mockChat.sendMessageStream = vi
+        .fn()
+        .mockResolvedValue(createEmptyStream());
+      await session.prompt({
+        sessionId: 'test-session-id',
+        prompt: [{ type: 'text', text: 'new third' }],
+      });
+
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'new third' }] },
+        { role: 'model', parts: [{ text: 'new third reply' }] },
+      ]);
+      mockChat.truncateHistory = vi.fn();
+
+      expect(session.rewindToTurn(2)).toEqual({
+        targetTurnIndex: 2,
+        apiTruncateIndex: 2,
+      });
+      expect(mockChat.truncateHistory).toHaveBeenCalledWith(2);
+    });
+
+    it('updates model-facing turn count through the real prompt send path', async () => {
+      setSessionTurnCounters(session, {
+        turn: 2,
+        modelFacingUserTurnCount: 2,
+      });
+      mockChat.sendMessageStream = vi
+        .fn()
+        .mockResolvedValue(createEmptyStream());
+
+      await session.prompt({
+        sessionId: 'test-session-id',
+        prompt: [{ type: 'text', text: 'third' }],
+      });
+
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ]);
+
+      expect(() => session.rewindToTurn(1)).toThrow(
+        'Cannot rewind to the requested turn',
+      );
+      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+    });
+
+    it('uses model-facing turn count when slash commands advance prompt ids', () => {
+      setSessionTurnCounters(session, {
+        turn: 4,
+        modelFacingUserTurnCount: 3,
+      });
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ]);
+
+      const result = session.rewindToTurn(2);
+
+      expect(result).toEqual({ targetTurnIndex: 2, apiTruncateIndex: 2 });
+      expect(mockChat.truncateHistory).toHaveBeenCalledWith(2);
+    });
+
+    it('rejects compressed rewind targets when the model-facing count is too low', () => {
+      setSessionTurnCounters(session, {
+        turn: 3,
+        modelFacingUserTurnCount: 2,
+      });
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ]);
+
+      expect(() => session.rewindToTurn(2)).toThrow(
+        'Cannot rewind to the requested turn',
+      );
+      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+    });
+
+    it('uses model-facing turn count when cron adds user text entries', () => {
+      setSessionTurnCounters(session, {
+        turn: 2,
+        modelFacingUserTurnCount: 3,
+      });
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'cron prompt' }] },
+        { role: 'model', parts: [{ text: 'cron reply' }] },
+      ]);
+
+      expect(() => session.rewindToTurn(1)).toThrow(
+        'Cannot rewind to the requested turn',
+      );
+      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+    });
+
+    it('rejects ACP rewind to the first turn after compression absorbed it', () => {
+      setSessionTurnCounters(session, {
+        turn: 3,
+        modelFacingUserTurnCount: 3,
+      });
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ]);
+
+      expect(() => session.rewindToTurn(0)).toThrow(
+        'Cannot rewind to the requested turn',
+      );
+      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+    });
+
+    it('does not treat the compression bridge as an ACP rewind target', () => {
+      setSessionTurnCounters(session, {
+        turn: 3,
+        modelFacingUserTurnCount: 3,
+      });
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        {
+          role: 'user',
+          parts: [{ text: core.COMPRESSION_CONTINUATION_BRIDGE }],
+        },
+        { role: 'model', parts: [{ text: 'continued response' }] },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ]);
+
+      expect(() => session.rewindToTurn(1)).toThrow(
+        'Cannot rewind to the requested turn',
+      );
+      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+    });
+
     it('rejects unreachable user turns', () => {
       vi.mocked(mockChat.getHistory).mockReturnValue([
         { role: 'user', parts: [{ text: 'first' }] },
@@ -400,6 +668,7 @@ describe('Session', () => {
     });
 
     it('restores a captured history snapshot', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 1 });
       const history: Content[] = [
         { role: 'user', parts: [{ text: 'first' }] },
         { role: 'model', parts: [{ text: 'first reply' }] },
@@ -409,8 +678,94 @@ describe('Session', () => {
       const snapshot = session.captureHistorySnapshot();
       session.restoreHistory(snapshot);
 
-      expect(snapshot).toEqual(history);
+      expect(snapshot).toEqual({
+        history,
+        modelFacingUserTurnCount: 1,
+      });
       expect(mockChat.setHistory).toHaveBeenCalledWith(history);
+    });
+
+    it('returns an isolated history snapshot from the chat history clone', () => {
+      const history: Content[] = [{ role: 'user', parts: [{ text: 'first' }] }];
+      vi.mocked(mockChat.getHistory).mockImplementation(() =>
+        structuredClone(history),
+      );
+
+      const snapshot = session.captureHistorySnapshot();
+      (snapshot.history[0]!.parts![0] as { text: string }).text = 'mutated';
+
+      expect(history[0]!.parts![0]).toEqual({ text: 'first' });
+    });
+
+    it('restores model-facing turn count with the history snapshot', () => {
+      setSessionTurnCounters(session, {
+        turn: 4,
+        modelFacingUserTurnCount: 4,
+      });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+        { role: 'user', parts: [{ text: 'fourth' }] },
+        { role: 'model', parts: [{ text: 'fourth reply' }] },
+      ];
+      vi.mocked(mockChat.getHistory).mockReturnValue(history);
+
+      const snapshot = session.captureHistorySnapshot();
+      expect(session.rewindToTurn(2)).toEqual({
+        targetTurnIndex: 2,
+        apiTruncateIndex: 2,
+      });
+
+      session.restoreHistory(snapshot);
+      vi.mocked(mockChat.getHistory).mockReturnValue(history);
+      vi.mocked(mockChat.truncateHistory).mockClear();
+
+      expect(() => session.rewindToTurn(1)).toThrow(
+        'Cannot rewind to the requested turn',
+      );
+      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+    });
+
+    it('derives model-facing turn count when restoring legacy history arrays', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 99 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'first' }] },
+        { role: 'model', parts: [{ text: 'first reply' }] },
+        {
+          role: 'user',
+          parts: [{ functionResponse: { name: 'tool', response: {} } }],
+        },
+        { role: 'user', parts: [{ text: 'second' }] },
+      ];
+
+      session.restoreHistory(history);
+
+      expect(mockChat.setHistory).toHaveBeenCalledWith(history);
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
+    it('does not count compression summaries when restoring legacy history arrays', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 99 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+        { role: 'user', parts: [{ text: 'fourth' }] },
+      ];
+
+      session.restoreHistory(history);
+
+      expect(mockChat.setHistory).toHaveBeenCalledWith(history);
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
     });
 
     it('rejects history restore while a prompt is running', () => {
@@ -1257,6 +1612,7 @@ describe('Session', () => {
         expect(mockGeminiClient.tryCompressChat).toHaveBeenCalled();
         expect(mockChat.sendMessageStream).not.toHaveBeenCalled();
         expect(mockChat.addHistory).not.toHaveBeenCalled();
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(0);
         expect(mockClient.sessionUpdate).not.toHaveBeenCalledWith({
           sessionId: 'test-session-id',
           update: {
@@ -1369,6 +1725,7 @@ describe('Session', () => {
           sendMessageStream,
           1,
         );
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
       });
 
       it('stops tool response follow-up before sending when the session token limit is exceeded', async () => {
@@ -1449,6 +1806,7 @@ describe('Session', () => {
             }),
           ],
         });
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
         expect(mockClient.sessionUpdate).toHaveBeenCalledWith({
           sessionId: 'test-session-id',
           update: {
@@ -1515,6 +1873,7 @@ describe('Session', () => {
           sendMessageStream,
           1,
         );
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
       });
 
       it('skips automatic compression after the first Stop-hook continuation', async () => {
@@ -1640,6 +1999,7 @@ describe('Session', () => {
           expect.any(AbortSignal),
         );
         expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(1);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
         expect(mockClient.sessionUpdate).toHaveBeenCalledWith({
           sessionId: 'test-session-id',
           update: {

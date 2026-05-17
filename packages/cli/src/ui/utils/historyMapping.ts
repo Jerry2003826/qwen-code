@@ -6,13 +6,12 @@
 
 import type { HistoryItem, HistoryItemUser } from '../types.js';
 import type { Content } from '@google/genai';
-import { STARTUP_CONTEXT_MODEL_ACK } from '@qwen-code/qwen-code-core';
 import { isSlashCommand } from './commandUtils.js';
-
-const COMPRESSION_SUMMARY_MODEL_ACK =
-  'Got it. Thanks for the additional context!';
-const COMPRESSION_CONTINUATION_BRIDGE =
-  'Continue with the prior task using the context above.';
+import {
+  getApiUserTextIndices,
+  hasCompressionSummaryPair,
+  hasStartupContext,
+} from '../../utils/apiHistoryUtils.js';
 
 /**
  * Returns true when the history item represents a real user prompt that was
@@ -29,64 +28,6 @@ export function isRealUserTurn(
 ): item is HistoryItem & HistoryItemUser {
   if (item.type !== 'user' || !item.text) return false;
   return !isSlashCommand(item.text) && !item.text.startsWith('?');
-}
-
-/**
- * Checks if a Content entry is a user-initiated text prompt
- * as opposed to a tool result (functionResponse).
- */
-function isUserTextContent(content: Content): boolean {
-  if (content.role !== 'user') return false;
-  if (!content.parts || content.parts.length === 0) return false;
-
-  const hasFunctionResponse = content.parts.some(
-    (part) => 'functionResponse' in part,
-  );
-  if (hasFunctionResponse) return false;
-
-  return content.parts.some((part) => 'text' in part && part.text);
-}
-
-function hasTextPart(content: Content | undefined, text: string): boolean {
-  return (
-    content?.parts?.some((part) => 'text' in part && part.text === text) ??
-    false
-  );
-}
-
-function hasCompressionSummaryPair(
-  apiHistory: Content[],
-  startIndex: number,
-): boolean {
-  const summary = apiHistory[startIndex];
-  return (
-    !!summary &&
-    isUserTextContent(summary) &&
-    apiHistory[startIndex + 1]?.role === 'model' &&
-    hasTextPart(apiHistory[startIndex + 1], COMPRESSION_SUMMARY_MODEL_ACK)
-  );
-}
-
-function getApiUserTextIndices(
-  apiHistory: Content[],
-  startIndex: number,
-  skipContinuationBridge: boolean,
-): number[] {
-  const indices: number[] = [];
-
-  for (let i = startIndex; i < apiHistory.length; i++) {
-    const content = apiHistory[i]!;
-    if (!isUserTextContent(content)) continue;
-    if (
-      skipContinuationBridge &&
-      hasTextPart(content, COMPRESSION_CONTINUATION_BRIDGE)
-    ) {
-      continue;
-    }
-    indices.push(i);
-  }
-
-  return indices;
 }
 
 function getUiTurnOrdinals(
@@ -106,22 +47,6 @@ function getUiTurnOrdinals(
   }
 
   return { targetOrdinal, totalRealUserTurns };
-}
-
-/**
- * Detects whether the API history starts with the startup context pair
- * (user env context + model acknowledgment).
- */
-function hasStartupContext(apiHistory: Content[]): boolean {
-  if (apiHistory.length < 2) return false;
-  const first = apiHistory[0];
-  const second = apiHistory[1];
-  if (first?.role !== 'user' || second?.role !== 'model') return false;
-  return (
-    second.parts?.some(
-      (part) => 'text' in part && part.text === STARTUP_CONTEXT_MODEL_ACK,
-    ) ?? false
-  );
 }
 
 /**
@@ -183,6 +108,7 @@ export function computeApiTruncationIndex(
       return -1;
     }
 
+    // Defensive: the guard above should keep this index in range.
     return apiTailUserIndices[targetOrdinal - compressedTurnCount - 1] ?? -1;
   }
 

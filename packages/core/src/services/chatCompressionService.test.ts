@@ -8,6 +8,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   ChatCompressionService,
   computeThresholds,
+  COMPRESSION_CONTINUATION_BRIDGE,
+  COMPRESSION_SUMMARY_MODEL_ACK,
   findCompressSplitPoint,
   MAX_CONSECUTIVE_FAILURES,
   TOOL_ROUND_RETAIN_COUNT,
@@ -1815,6 +1817,9 @@ describe('ChatCompressionService', () => {
       expect(result.newHistory).toHaveLength(2);
       expect(result.newHistory![0].role).toBe('user');
       expect(result.newHistory![1].role).toBe('model');
+      expect(result.newHistory![1].parts?.[0].text).toBe(
+        COMPRESSION_SUMMARY_MODEL_ACK,
+      );
       // The orphaned funcCall is stripped before compression, so only the first 5
       // messages are sent, plus the compression instruction (+1) = history.length total.
       const optionsArg = mockGenerateContent.mock.calls[0][0];
@@ -2029,8 +2034,11 @@ describe('ChatCompressionService', () => {
       expect(newHistory[0].role).toBe('user');
       expect(newHistory[0].parts?.[0].text).toBe('state snapshot summary');
       expect(newHistory[1].role).toBe('model');
+      expect(newHistory[1].parts?.[0].text).toBe(COMPRESSION_SUMMARY_MODEL_ACK);
       expect(newHistory[2].role).toBe('user');
-      expect(newHistory[2].parts?.[0].text).toMatch(/Continue/);
+      expect(newHistory[2].parts?.[0].text).toBe(
+        COMPRESSION_CONTINUATION_BRIDGE,
+      );
       // Retained two complete pairs (4 entries) + trailing model+fc = 5.
       expect(newHistory.slice(3)).toHaveLength(5);
       expect(newHistory[3].role).toBe('model');

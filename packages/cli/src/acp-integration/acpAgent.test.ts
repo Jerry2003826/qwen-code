@@ -844,9 +844,10 @@ describe('QwenAgent MCP SSE/HTTP support', () => {
         sendAvailableCommandsUpdate: vi.fn().mockResolvedValue(undefined),
         replayHistory: vi.fn().mockResolvedValue(undefined),
         installRewriter: vi.fn(),
-        captureHistorySnapshot: vi
-          .fn()
-          .mockReturnValue([{ role: 'user', parts: [{ text: 'before' }] }]),
+        captureHistorySnapshot: vi.fn().mockReturnValue({
+          history: [{ role: 'user', parts: [{ text: 'before' }] }],
+          modelFacingUserTurnCount: 1,
+        }),
         restoreHistory: vi.fn(),
         rewindToTurn: vi
           .fn()
@@ -1719,7 +1720,10 @@ describe('QwenAgent MCP SSE/HTTP support', () => {
     expect(lastSessionMock?.rewindToTurn).toHaveBeenCalledWith(1);
     expect(response).toEqual({
       success: true,
-      historyBeforeRewind: [{ role: 'user', parts: [{ text: 'before' }] }],
+      historyBeforeRewind: {
+        history: [{ role: 'user', parts: [{ text: 'before' }] }],
+        modelFacingUserTurnCount: 1,
+      },
       targetTurnIndex: 1,
       apiTruncateIndex: 2,
     });
@@ -1838,6 +1842,85 @@ describe('QwenAgent MCP SSE/HTTP support', () => {
 
     expect(lastSessionMock?.restoreHistory).toHaveBeenCalledWith(history);
     expect(response).toEqual({ success: true });
+
+    mockConnectionState.resolve();
+    await agentPromise;
+  });
+
+  it('restoreSessionHistory extension method restores history snapshots', async () => {
+    const sessionId = '11111111-1111-1111-1111-111111111111';
+    await setupSessionMocks(sessionId);
+
+    const agentPromise = runAcpAgent(
+      mockConfig,
+      makeSessionSettings(),
+      mockArgv,
+    );
+    await vi.waitFor(() => expect(capturedAgentFactory).toBeDefined());
+
+    const agent = capturedAgentFactory!({
+      get closed() {
+        return mockConnectionState.promise;
+      },
+    }) as AgentLike;
+
+    await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+    const snapshot = {
+      history: [{ role: 'user', parts: [{ text: 'restored' }] }],
+      modelFacingUserTurnCount: 1,
+    };
+    const response = await agent.extMethod('restoreSessionHistory', {
+      sessionId,
+      history: snapshot,
+      cwd: '/tmp',
+    });
+
+    expect(lastSessionMock?.restoreHistory).toHaveBeenCalledWith(snapshot);
+    expect(response).toEqual({ success: true });
+
+    mockConnectionState.resolve();
+    await agentPromise;
+  });
+
+  it('restoreSessionHistory rejects invalid history snapshot turn counts', async () => {
+    const sessionId = '11111111-1111-1111-1111-111111111111';
+    await setupSessionMocks(sessionId);
+
+    const agentPromise = runAcpAgent(
+      mockConfig,
+      makeSessionSettings(),
+      mockArgv,
+    );
+    await vi.waitFor(() => expect(capturedAgentFactory).toBeDefined());
+
+    const agent = capturedAgentFactory!({
+      get closed() {
+        return mockConnectionState.promise;
+      },
+    }) as AgentLike;
+
+    await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+
+    for (const modelFacingUserTurnCount of [
+      NaN,
+      Infinity,
+      -Infinity,
+      -1,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      await expect(
+        agent.extMethod('restoreSessionHistory', {
+          sessionId,
+          history: {
+            history: [],
+            modelFacingUserTurnCount,
+          },
+        }),
+      ).rejects.toThrow('Invalid or missing history');
+    }
+
+    expect(lastSessionMock?.restoreHistory).not.toHaveBeenCalled();
 
     mockConnectionState.resolve();
     await agentPromise;

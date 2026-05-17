@@ -21,6 +21,14 @@ import {
   slimCompactionInput,
 } from './compactionInputSlimming.js';
 import { estimatePromptTokens } from './tokenEstimation.js';
+import {
+  COMPRESSION_CONTINUATION_BRIDGE,
+  COMPRESSION_SUMMARY_MODEL_ACK,
+} from './chatCompressionConstants.js';
+export {
+  COMPRESSION_CONTINUATION_BRIDGE,
+  COMPRESSION_SUMMARY_MODEL_ACK,
+} from './chatCompressionConstants.js';
 
 /**
  * The fraction of the latest chat history to keep. A value of 0.3
@@ -595,7 +603,7 @@ export class ChatCompressionService {
         },
         {
           role: 'model',
-          parts: [{ text: 'Got it. Thanks for the additional context!' }],
+          parts: [{ text: COMPRESSION_SUMMARY_MODEL_ACK }],
         },
         // When the kept slice starts with model+functionCall (because
         // tool-round absorption pulled the only fresh user message into
@@ -607,7 +615,7 @@ export class ChatCompressionService {
                 role: 'user' as const,
                 parts: [
                   {
-                    text: 'Continue with the prior task using the context above.',
+                    text: COMPRESSION_CONTINUATION_BRIDGE,
                   },
                 ],
               },
