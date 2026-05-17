@@ -169,6 +169,65 @@ describe('computeApiTruncationIndex', () => {
   });
 
   describe('compression fallback', () => {
+    it('maps tail user turns after a compression summary pair', () => {
+      const ui: HistoryItem[] = [
+        userItem(1),
+        geminiItem(2),
+        userItem(3),
+        geminiItem(4),
+        userItem(5),
+        geminiItem(6),
+      ];
+      const api: Content[] = [
+        userContent('compressed summary of prompt 1 and prompt 3'),
+        modelContent('Got it. Thanks for the additional context!'),
+        userContent('prompt 5'),
+        modelContent('response 5'),
+      ];
+
+      expect(computeApiTruncationIndex(ui, 5, api)).toBe(2);
+    });
+
+    it('keeps compressed turns unreachable after a compression summary pair', () => {
+      const ui: HistoryItem[] = [
+        userItem(1),
+        geminiItem(2),
+        userItem(3),
+        geminiItem(4),
+        userItem(5),
+        geminiItem(6),
+      ];
+      const api: Content[] = [
+        userContent('compressed summary of prompt 1 and prompt 3'),
+        modelContent('Got it. Thanks for the additional context!'),
+        userContent('prompt 5'),
+        modelContent('response 5'),
+      ];
+
+      expect(computeApiTruncationIndex(ui, 3, api)).toBe(-1);
+    });
+
+    it('ignores the compression continuation bridge when mapping tail turns', () => {
+      const ui: HistoryItem[] = [
+        userItem(1),
+        geminiItem(2),
+        userItem(3),
+        geminiItem(4),
+        userItem(5),
+        geminiItem(6),
+      ];
+      const api: Content[] = [
+        userContent('compressed summary of prompt 1 and prompt 3'),
+        modelContent('Got it. Thanks for the additional context!'),
+        userContent('Continue with the prior task using the context above.'),
+        modelContent('continued response'),
+        userContent('prompt 5'),
+        modelContent('response 5'),
+      ];
+
+      expect(computeApiTruncationIndex(ui, 5, api)).toBe(4);
+    });
+
     it('returns -1 when not enough user prompts found', () => {
       const ui: HistoryItem[] = [
         userItem(1),

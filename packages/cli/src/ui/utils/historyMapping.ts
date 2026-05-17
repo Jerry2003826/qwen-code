@@ -9,6 +9,11 @@ import type { Content } from '@google/genai';
 import { STARTUP_CONTEXT_MODEL_ACK } from '@qwen-code/qwen-code-core';
 import { isSlashCommand } from './commandUtils.js';
 
+const COMPRESSION_SUMMARY_MODEL_ACK =
+  'Got it. Thanks for the additional context!';
+const COMPRESSION_CONTINUATION_BRIDGE =
+  'Continue with the prior task using the context above.';
+
 /**
  * Returns true when the history item represents a real user prompt that was
  * sent to the model, as opposed to a slash-command invocation (`/help`,
@@ -40,6 +45,67 @@ function isUserTextContent(content: Content): boolean {
   if (hasFunctionResponse) return false;
 
   return content.parts.some((part) => 'text' in part && part.text);
+}
+
+function hasTextPart(content: Content | undefined, text: string): boolean {
+  return (
+    content?.parts?.some((part) => 'text' in part && part.text === text) ??
+    false
+  );
+}
+
+function hasCompressionSummaryPair(
+  apiHistory: Content[],
+  startIndex: number,
+): boolean {
+  const summary = apiHistory[startIndex];
+  return (
+    !!summary &&
+    isUserTextContent(summary) &&
+    apiHistory[startIndex + 1]?.role === 'model' &&
+    hasTextPart(apiHistory[startIndex + 1], COMPRESSION_SUMMARY_MODEL_ACK)
+  );
+}
+
+function getApiUserTextIndices(
+  apiHistory: Content[],
+  startIndex: number,
+  skipContinuationBridge: boolean,
+): number[] {
+  const indices: number[] = [];
+
+  for (let i = startIndex; i < apiHistory.length; i++) {
+    const content = apiHistory[i]!;
+    if (!isUserTextContent(content)) continue;
+    if (
+      skipContinuationBridge &&
+      hasTextPart(content, COMPRESSION_CONTINUATION_BRIDGE)
+    ) {
+      continue;
+    }
+    indices.push(i);
+  }
+
+  return indices;
+}
+
+function getUiTurnOrdinals(
+  uiHistory: HistoryItem[],
+  targetUserItemId: number,
+): { targetOrdinal: number; totalRealUserTurns: number } {
+  let targetOrdinal = -1;
+  let totalRealUserTurns = 0;
+
+  for (const item of uiHistory) {
+    if (!isRealUserTurn(item)) continue;
+
+    totalRealUserTurns++;
+    if (item.id === targetUserItemId) {
+      targetOrdinal = totalRealUserTurns;
+    }
+  }
+
+  return { targetOrdinal, totalRealUserTurns };
 }
 
 /**
@@ -88,39 +154,52 @@ export function computeApiTruncationIndex(
   targetUserItemId: number,
   apiHistory: Content[],
 ): number {
-  // Count how many UI user turns exist before the target
-  let uiUserTurnCount = 0;
-  for (const item of uiHistory) {
-    if (item.id === targetUserItemId) {
-      break;
-    }
-    if (isRealUserTurn(item)) {
-      uiUserTurnCount++;
-    }
-  }
+  const { targetOrdinal, totalRealUserTurns } = getUiTurnOrdinals(
+    uiHistory,
+    targetUserItemId,
+  );
+
+  if (targetOrdinal < 0) return -1;
 
   // Determine the starting index in the API history (skip startup context)
   const startIndex = hasStartupContext(apiHistory) ? 2 : 0;
 
-  if (uiUserTurnCount === 0) {
+  if (hasCompressionSummaryPair(apiHistory, startIndex)) {
+    // Compression replaces the oldest N UI turns with one synthetic
+    // summary user entry plus a fixed model acknowledgment. The remaining
+    // API user-text entries are the uncompressed tail, so align that tail
+    // against the end of the UI turn list instead of counting from the front.
+    const apiTailUserIndices = getApiUserTextIndices(
+      apiHistory,
+      startIndex + 2,
+      true,
+    );
+    const compressedTurnCount = Math.max(
+      0,
+      totalRealUserTurns - apiTailUserIndices.length,
+    );
+
+    if (targetOrdinal <= compressedTurnCount) {
+      return -1;
+    }
+
+    return apiTailUserIndices[targetOrdinal - compressedTurnCount - 1] ?? -1;
+  }
+
+  if (targetOrdinal === 1) {
     // Rewinding to the first user turn: keep only startup context (if any)
     return startIndex;
   }
 
   // Walk the API history from after the startup context, counting
   // user text prompts to find the one corresponding to the target turn.
-  let realUserPromptCount = 0;
-
-  for (let i = startIndex; i < apiHistory.length; i++) {
-    if (isUserTextContent(apiHistory[i]!)) {
-      realUserPromptCount++;
-      // The target turn is the (uiUserTurnCount + 1)th real user prompt.
-      // We want to truncate right before it.
-      if (realUserPromptCount > uiUserTurnCount) {
-        return i;
-      }
-    }
-  }
+  const apiUserTextIndices = getApiUserTextIndices(
+    apiHistory,
+    startIndex,
+    false,
+  );
+  const targetApiIndex = apiUserTextIndices[targetOrdinal - 1];
+  if (targetApiIndex !== undefined) return targetApiIndex;
 
   // If we didn't find enough user prompts (e.g., after compression),
   // signal that the target turn is unreachable.
