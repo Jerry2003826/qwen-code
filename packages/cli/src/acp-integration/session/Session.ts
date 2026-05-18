@@ -793,9 +793,10 @@ export class Session implements SessionContext {
           const functionCalls: FunctionCall[] = [];
           let usageMetadata: GenerateContentResponseUsageMetadata | null = null;
           const streamStartTime = Date.now();
+          let recordedModelFacingTurn = false;
 
           try {
-            const recordedModelFacingTurn =
+            recordedModelFacingTurn =
               this.#recordModelFacingUserTurn(nextMessage);
             const sendResult = await this.#sendMessageStreamWithAutoCompression(
               promptId,
@@ -1060,9 +1061,10 @@ export class Session implements SessionContext {
           const functionCalls: FunctionCall[] = [];
           let usageMetadata: GenerateContentResponseUsageMetadata | null = null;
           const streamStartTime = Date.now();
+          let recordedModelFacingTurn = false;
 
           try {
-            const recordedModelFacingTurn =
+            recordedModelFacingTurn =
               this.#recordModelFacingUserTurn(nextMessage);
             const continueSendResult =
               await this.#sendMessageStreamWithAutoCompression(
@@ -1522,6 +1524,8 @@ export class Session implements SessionContext {
         const promptId =
           this.config.getSessionId() + '########cron' + Date.now();
 
+        let recordedModelFacingTurn = false;
+
         try {
           // Echo the cron prompt as a user message so the client sees it
           await this.sendUpdate({
@@ -1537,7 +1541,6 @@ export class Session implements SessionContext {
             role: 'user',
             parts: [...cronReminders, { text: prompt }],
           };
-          let recordedModelFacingTurn = false;
 
           while (nextMessage !== null) {
             if (ac.signal.aborted) return;
