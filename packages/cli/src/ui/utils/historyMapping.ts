@@ -6,12 +6,15 @@
 
 import type { HistoryItem, HistoryItemUser } from '../types.js';
 import type { Content } from '@google/genai';
+import { createDebugLogger } from '@qwen-code/qwen-code-core';
 import { isSlashCommand } from './commandUtils.js';
 import {
   getApiUserTextIndices,
   hasCompressionSummaryPair,
   hasStartupContext,
 } from '../../utils/apiHistoryUtils.js';
+
+const debugLogger = createDebugLogger('HISTORY_MAPPING');
 
 /**
  * Returns true when the history item represents a real user prompt that was
@@ -105,10 +108,15 @@ export function computeApiTruncationIndex(
     );
 
     if (targetOrdinal <= compressedTurnCount) {
+      debugLogger.info(
+        `Rewind target turn ${targetOrdinal} is unreachable: compressed ${compressedTurnCount} of ${totalRealUserTurns} total turns, tail has ${apiTailUserIndices.length} entries`,
+      );
       return -1;
     }
 
-    // Defensive: the guard above should keep this index in range.
+    // Defensive: the guard above (targetOrdinal <= compressedTurnCount)
+    // should always prevent out-of-bounds access here, so ?? -1 is
+    // unreachable in normal operation.
     return apiTailUserIndices[targetOrdinal - compressedTurnCount - 1] ?? -1;
   }
 

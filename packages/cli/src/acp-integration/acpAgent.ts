@@ -1741,9 +1741,13 @@ class QwenAgent implements Agent {
           typeof history === 'object' &&
           !Array.isArray(history) &&
           Array.isArray((history as { history?: unknown }).history) &&
-          Number.isSafeInteger(
+          Number.isInteger(
             (history as { modelFacingUserTurnCount?: unknown })
               .modelFacingUserTurnCount,
+          ) &&
+          Number.isFinite(
+            (history as { modelFacingUserTurnCount?: unknown })
+              .modelFacingUserTurnCount as number,
           ) &&
           ((history as { modelFacingUserTurnCount?: unknown })
             .modelFacingUserTurnCount as number) >= 0;

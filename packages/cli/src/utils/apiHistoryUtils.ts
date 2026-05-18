@@ -6,10 +6,32 @@
 
 import type { Content } from '@google/genai';
 import {
-  COMPRESSION_CONTINUATION_BRIDGE,
+  COMPRESSION_CONTINUATION_BRIDGE_MARKER,
   COMPRESSION_SUMMARY_MODEL_ACK,
   STARTUP_CONTEXT_MODEL_ACK,
-} from '@qwen-code/qwen-code-core';
+ createDebugLogger } from '@qwen-code/qwen-code-core';
+
+const debugLogger = createDebugLogger('API_HISTORY_UTILS');
+
+/**
+ * Checks whether a Content entry is the synthetic continuation bridge
+ * inserted after compression. Detection uses the invisible sentinel
+ * marker prefix rather than matching on the full string, so a real user
+ * prompt with the same visible text is not mistaken for the bridge.
+ */
+export function isCompressionContinuationBridge(
+  content: Content | undefined,
+): boolean {
+  if (!content || content.role !== 'user') return false;
+  return (
+    content.parts?.some(
+      (part) =>
+        'text' in part &&
+        typeof part.text === 'string' &&
+        part.text.startsWith(COMPRESSION_CONTINUATION_BRIDGE_MARKER),
+    ) ?? false
+  );
+}
 
 export function hasTextPart(
   content: Content | undefined,
@@ -66,10 +88,8 @@ export function getApiUserTextIndices(
   for (let i = startIndex; i < apiHistory.length; i++) {
     const content = apiHistory[i]!;
     if (!isApiUserTextContent(content)) continue;
-    if (
-      skipContinuationBridge &&
-      hasTextPart(content, COMPRESSION_CONTINUATION_BRIDGE)
-    ) {
+    if (skipContinuationBridge && isCompressionContinuationBridge(content)) {
+      debugLogger.debug('Skipping compression continuation bridge at index', i);
       continue;
     }
     indices.push(i);

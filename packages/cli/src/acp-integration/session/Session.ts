@@ -147,6 +147,22 @@ function computeVisibleModelFacingUserTurnCount(apiHistory: Content[]): number {
   return getApiUserTextIndices(apiHistory, startIndex, true).length;
 }
 
+function validateModelFacingUserTurnCount(count: unknown): number {
+  if (typeof count !== 'number' || !Number.isInteger(count)) {
+    throw RequestError.invalidParams(
+      undefined,
+      `modelFacingUserTurnCount must be an integer, got ${typeof count}`,
+    );
+  }
+  if (!Number.isFinite(count) || count < 0) {
+    throw RequestError.invalidParams(
+      undefined,
+      `modelFacingUserTurnCount must be a non-negative finite integer, got ${count}`,
+    );
+  }
+  return count;
+}
+
 export function computeInitialTurnFromHistory(
   records: ChatRecord[],
   sessionId: string,
@@ -480,13 +496,16 @@ export class Session implements SessionContext {
     }
 
     const history = Array.isArray(snapshot) ? snapshot : snapshot.history;
-    this.config
-      .getGeminiClient()!
-      .getChat()
-      .setHistory(structuredClone(history));
+    if (history.length === 0) {
+      throw RequestError.invalidParams(
+        undefined,
+        'Cannot restore an empty history snapshot',
+      );
+    }
+    this.config.getGeminiClient()!.getChat().setHistory(history);
     this.modelFacingUserTurnCount = Array.isArray(snapshot)
       ? computeVisibleModelFacingUserTurnCount(history)
-      : snapshot.modelFacingUserTurnCount;
+      : validateModelFacingUserTurnCount(snapshot.modelFacingUserTurnCount);
   }
 
   #computeApiTruncationIndexForUserTurn(
@@ -515,10 +534,15 @@ export class Session implements SessionContext {
       );
 
       if (targetTurnIndex < compressedTurnCount) {
+        debugLogger.info(
+          `Rewind to turn ${targetTurnIndex} rejected: compressed ${compressedTurnCount} of ${totalUserTurns} total turns, tail has ${apiTailUserIndices.length} entries`,
+        );
         return -1;
       }
 
-      // Defensive: the guard above should keep this index in range.
+      // Defensive: the guard above (targetTurnIndex < compressedTurnCount)
+      // should always prevent out-of-bounds access here, so ?? -1 is
+      // unreachable in normal operation.
       return apiTailUserIndices[targetTurnIndex - compressedTurnCount] ?? -1;
     }
 
@@ -830,6 +854,9 @@ export class Session implements SessionContext {
               }
             }
           } catch (error) {
+            // Rollback model-facing turn count to prevent counter drift on exceptions
+            this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+
             // Fire StopFailure hook (fire-and-forget, replaces Stop event for API errors)
             // Aligned with useGeminiStream.ts handleFinishedWithErrorEvent
             const errorStatus = getErrorStatus(error);
@@ -1093,6 +1120,9 @@ export class Session implements SessionContext {
               }
             }
           } catch (error) {
+            // Rollback model-facing turn count to prevent counter drift on exceptions
+            this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+
             // Fire StopFailure hook (fire-and-forget)
             const errorStatus = getErrorStatus(error);
             const errorMessage =
@@ -1507,6 +1537,7 @@ export class Session implements SessionContext {
             role: 'user',
             parts: [...cronReminders, { text: prompt }],
           };
+          let recordedModelFacingTurn = false;
 
           while (nextMessage !== null) {
             if (ac.signal.aborted) return;
@@ -1516,7 +1547,7 @@ export class Session implements SessionContext {
               null;
             const streamStartTime = Date.now();
 
-            const recordedModelFacingTurn =
+            recordedModelFacingTurn =
               this.#recordModelFacingUserTurn(nextMessage);
             const sendResult = await this.#sendMessageStreamWithAutoCompression(
               promptId,
@@ -1597,6 +1628,9 @@ export class Session implements SessionContext {
             }
           }
         } catch (error) {
+          // Rollback model-facing turn count to prevent counter drift on exceptions
+          this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+
           if (ac.signal.aborted) return;
           debugLogger.error('Error processing cron prompt:', error);
           const msg = error instanceof Error ? error.message : String(error);
