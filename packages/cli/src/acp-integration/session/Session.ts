@@ -160,6 +160,12 @@ function validateModelFacingUserTurnCount(count: unknown): number {
       `modelFacingUserTurnCount must be a non-negative finite integer, got ${count}`,
     );
   }
+  if (count > Number.MAX_SAFE_INTEGER) {
+    throw RequestError.invalidParams(
+      undefined,
+      `modelFacingUserTurnCount exceeds maximum safe integer, got ${count}`,
+    );
+  }
   return count;
 }
 

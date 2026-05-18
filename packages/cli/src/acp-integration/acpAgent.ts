@@ -1750,7 +1750,9 @@ class QwenAgent implements Agent {
               .modelFacingUserTurnCount as number,
           ) &&
           ((history as { modelFacingUserTurnCount?: unknown })
-            .modelFacingUserTurnCount as number) >= 0;
+            .modelFacingUserTurnCount as number) >= 0 &&
+          ((history as { modelFacingUserTurnCount?: unknown })
+            .modelFacingUserTurnCount as number) <= Number.MAX_SAFE_INTEGER;
         if (!Array.isArray(history) && !isHistorySnapshot) {
           throw RequestError.invalidParams(
             undefined,
