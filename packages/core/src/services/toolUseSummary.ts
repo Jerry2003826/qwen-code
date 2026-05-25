@@ -139,6 +139,7 @@ export async function generateToolUseSummary(
       purpose: 'tool-use-summary',
       contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
       systemInstruction: TOOL_USE_SUMMARY_SYSTEM_PROMPT,
+      respectOutputLanguagePreference: true,
       config: {
         maxOutputTokens: 60,
         temperature: 0.3,

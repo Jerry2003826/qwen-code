@@ -218,6 +218,7 @@ async function generateViaBaseLlm(
     contents,
     abortSignal,
     model,
+    respectOutputLanguagePreference: true,
     // Suggestions are best-effort UI hints; if the model is unavailable,
     // the user shouldn't pay 7× the latency for a hint they may ignore.
     maxAttempts: 1,

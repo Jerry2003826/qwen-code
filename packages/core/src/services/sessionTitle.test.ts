@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { Content } from '@google/genai';
 import type { Config } from '../config/config.js';
@@ -15,6 +18,7 @@ interface MockOptions {
   generateJsonResult?:
     | Record<string, unknown>
     | ((...args: unknown[]) => Promise<Record<string, unknown>>);
+  outputLanguageFilePath?: string;
 }
 
 function makeConfig(opts: MockOptions): {
@@ -36,6 +40,7 @@ function makeConfig(opts: MockOptions): {
       }),
     })),
     getBaseLlmClient: vi.fn(() => ({ generateJson })),
+    getOutputLanguageFilePath: vi.fn(() => opts.outputLanguageFilePath),
   } as unknown as Config;
 
   return { config, generateJson };
@@ -48,6 +53,13 @@ const DIALOG_HISTORY: Content[] = [
     parts: [{ text: "Let's look at the button handler and the viewport CSS." }],
   },
 ];
+
+function writeOutputLanguageFile(content: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-session-title-'));
+  const file = path.join(dir, 'output-language.md');
+  fs.writeFileSync(file, content, 'utf8');
+  return file;
+}
 
 describe('tryGenerateSessionTitle', () => {
   it('returns {ok:false, reason:"no_fast_model"} when fast model is absent', async () => {
@@ -146,6 +158,29 @@ describe('tryGenerateSessionTitle', () => {
     expect(callOpts.schema.required).toEqual(['title']);
     expect(callOpts.schema.properties.title.type).toBe('string');
     expect(callOpts.maxAttempts).toBe(1);
+  });
+
+  it('includes the configured output language preference in the title prompt', async () => {
+    const { config, generateJson } = makeConfig({
+      fastModel: 'qwen-turbo',
+      history: DIALOG_HISTORY,
+      generateJsonResult: { title: 'Fix login button on mobile' },
+      outputLanguageFilePath: writeOutputLanguageFile(
+        'You MUST always respond in Chinese.',
+      ),
+    });
+
+    await tryGenerateSessionTitle(config, new AbortController().signal);
+
+    const callOpts = generateJson.mock.calls[0][0] as {
+      systemInstruction: string;
+    };
+    expect(callOpts.systemInstruction).toContain(
+      'Generate a concise, sentence-case title',
+    );
+    expect(callOpts.systemInstruction).toContain(
+      'You MUST always respond in Chinese.',
+    );
   });
 
   it('sanitizes residual markdown and trailing punctuation from the model result', async () => {

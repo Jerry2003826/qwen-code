@@ -63,6 +63,7 @@ export async function generateSessionRecap(
         { role: 'user', parts: [{ text: RECAP_USER_PROMPT }] },
       ],
       systemInstruction: RECAP_SYSTEM_PROMPT,
+      respectOutputLanguagePreference: true,
       config: {
         maxOutputTokens: 300,
         temperature: 0.3,

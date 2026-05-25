@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { Content } from '@google/genai';
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import type { Config } from '../config/config.js';
@@ -48,6 +51,13 @@ const conversationHistory: Content[] = [
   { role: 'user', parts: [{ text: 'anything else?' }] },
   { role: 'model', parts: [{ text: 'You could run tests.' }] },
 ];
+
+function writeOutputLanguageFile(content: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-suggestion-'));
+  const file = path.join(dir, 'output-language.md');
+  fs.writeFileSync(file, content, 'utf8');
+  return file;
+}
 
 describe('generatePromptSuggestion', () => {
   beforeEach(() => {
@@ -111,6 +121,32 @@ describe('generatePromptSuggestion', () => {
 
     expect(mockRunForkedAgent).toHaveBeenCalledWith(
       expect.objectContaining({ model: 'openai:fast-model' }),
+    );
+  });
+
+  it('includes the configured output language preference in base side queries', async () => {
+    const generateText = vi.fn().mockResolvedValue({
+      text: 'run the tests',
+      usage: undefined,
+    });
+    const config = {
+      getFastModel: vi.fn(() => 'fast-model'),
+      getModel: vi.fn(() => 'main-model'),
+      getBaseLlmClient: vi.fn(() => ({ generateText })),
+      getOutputLanguageFilePath: vi.fn(() =>
+        writeOutputLanguageFile('You MUST always respond in Chinese.'),
+      ),
+    } as unknown as Config;
+
+    await generatePromptSuggestion(
+      config,
+      conversationHistory,
+      new AbortController().signal,
+    );
+
+    const callArg = generateText.mock.calls[0][0];
+    expect(callArg.systemInstruction).toContain(
+      'You MUST always respond in Chinese.',
     );
   });
 });

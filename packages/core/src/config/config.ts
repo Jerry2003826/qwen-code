@@ -3076,6 +3076,10 @@ export class Config {
     ];
   }
 
+  getOutputLanguageFilePath(): string | undefined {
+    return this.outputLanguageFilePath;
+  }
+
   getExperimentalZedIntegration(): boolean {
     return this.experimentalZedIntegration;
   }

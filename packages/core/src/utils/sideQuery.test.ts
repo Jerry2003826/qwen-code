@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { BaseLlmClient } from '../core/baseLlmClient.js';
 import type { Config } from '../config/config.js';
@@ -24,8 +27,16 @@ describe('runSideQuery', () => {
       getBaseLlmClient: vi.fn().mockReturnValue(mockBaseLlmClient),
       getModel: vi.fn().mockReturnValue('main-model'),
       getFastModel: vi.fn().mockReturnValue(undefined),
+      getOutputLanguageFilePath: vi.fn().mockReturnValue(undefined),
     } as unknown as Config;
   });
+
+  function writeOutputLanguageFile(content: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-side-query-'));
+    const file = path.join(dir, 'output-language.md');
+    fs.writeFileSync(file, content, 'utf8');
+    return file;
+  }
 
   describe('JSON mode (schema present)', () => {
     it('routes through BaseLlmClient.generateJson with default policy', async () => {
@@ -229,6 +240,35 @@ describe('runSideQuery', () => {
         }),
       ).rejects.toBe(apiError);
     });
+
+    it('appends output language preference when requested', async () => {
+      vi.mocked(mockBaseLlmClient.generateJson).mockResolvedValue({ ok: true });
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        writeOutputLanguageFile('You MUST always respond in Chinese.'),
+      );
+
+      await runSideQuery<{ ok: boolean }>(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+          required: ['ok'],
+        },
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom JSON side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateJson).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toContain(
+        'custom JSON side query prompt',
+      );
+      expect(callArg.systemInstruction).toContain(
+        'You MUST always respond in Chinese.',
+      );
+    });
   });
 
   describe('text mode (no schema)', () => {
@@ -400,6 +440,30 @@ describe('runSideQuery', () => {
           abortSignal: abortController.signal,
         }),
       ).rejects.toBe(apiError);
+    });
+
+    it('appends output language preference when requested', async () => {
+      mockTextResult('ok');
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        writeOutputLanguageFile('You MUST always respond in Chinese.'),
+      );
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateText).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toContain(
+        'custom text side query prompt',
+      );
+      expect(callArg.systemInstruction).toContain(
+        'You MUST always respond in Chinese.',
+      );
     });
   });
 });

@@ -131,6 +131,7 @@ export async function tryGenerateSessionTitle(
     const result = await runSideQuery<{ title?: string }>(config, {
       purpose: 'session-title',
       systemInstruction: TITLE_SYSTEM_PROMPT,
+      respectOutputLanguagePreference: true,
       schema: TITLE_SCHEMA as unknown as Record<string, unknown>,
       contents: [
         {

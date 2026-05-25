@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { readFile } from 'node:fs/promises';
 import type {
   Content,
   GenerateContentConfig,
@@ -30,6 +31,12 @@ export interface SideQueryJsonOptions<TResponse> {
   systemInstruction?: string | Part | Part[] | Content;
   promptId?: string;
   purpose?: string;
+  /**
+   * Append the user's configured `output-language.md` rule to this side
+   * query's system instruction. Use only for side queries that produce
+   * user-visible text.
+   */
+  respectOutputLanguagePreference?: boolean;
   /**
    * Caller-supplied generation config. `thinkingConfig.includeThoughts`
    * defaults to `false` for all side queries; pass
@@ -73,6 +80,12 @@ export interface SideQueryTextOptions {
   systemInstruction?: string | Part | Part[] | Content;
   promptId?: string;
   purpose?: string;
+  /**
+   * Append the user's configured `output-language.md` rule to this side
+   * query's system instruction. Use only for side queries that produce
+   * user-visible text.
+   */
+  respectOutputLanguagePreference?: boolean;
   /**
    * Caller-supplied generation config. `thinkingConfig.includeThoughts`
    * defaults to `false` for all side queries; pass
@@ -132,6 +145,74 @@ function isJsonOptions<TResponse>(
   );
 }
 
+const OUTPUT_LANGUAGE_PREFERENCE_HEADER =
+  'User output language preference from output-language.md:';
+
+async function readOutputLanguagePreference(
+  config: Config,
+): Promise<string | undefined> {
+  const filePath = config.getOutputLanguageFilePath?.();
+  if (!filePath) return undefined;
+
+  try {
+    const content = await readFile(filePath, 'utf8');
+    return content.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function appendSystemInstructionText(
+  systemInstruction: string | Part | Part[] | Content | undefined,
+  text: string,
+): string | Part | Part[] | Content {
+  if (!systemInstruction) {
+    return text;
+  }
+
+  if (typeof systemInstruction === 'string') {
+    return `${systemInstruction}\n\n${text}`;
+  }
+
+  const textPart: Part = { text };
+  if (Array.isArray(systemInstruction)) {
+    return [...systemInstruction, textPart];
+  }
+
+  if (
+    typeof systemInstruction === 'object' &&
+    'parts' in systemInstruction &&
+    Array.isArray(systemInstruction.parts)
+  ) {
+    return {
+      ...systemInstruction,
+      parts: [...systemInstruction.parts, textPart],
+    };
+  }
+
+  return [systemInstruction as Part, textPart];
+}
+
+async function applyOutputLanguagePreference(
+  config: Config,
+  systemInstruction: string | Part | Part[] | Content | undefined,
+  respectOutputLanguagePreference: boolean | undefined,
+): Promise<string | Part | Part[] | Content | undefined> {
+  if (!respectOutputLanguagePreference) {
+    return systemInstruction;
+  }
+
+  const preference = await readOutputLanguagePreference(config);
+  if (!preference) {
+    return systemInstruction;
+  }
+
+  return appendSystemInstructionText(
+    systemInstruction,
+    `${OUTPUT_LANGUAGE_PREFERENCE_HEADER}\n${preference}`,
+  );
+}
+
 export async function runSideQuery(
   config: Config,
   options: SideQueryTextOptions,
@@ -147,6 +228,11 @@ export async function runSideQuery<TResponse>(
   const model = resolveDefaultModel(config, options.model);
   const promptId = options.promptId ?? buildDefaultPromptId(options.purpose);
   const requestConfig = applyThinkingDefault(options.config);
+  const systemInstruction = await applyOutputLanguagePreference(
+    config,
+    options.systemInstruction,
+    options.respectOutputLanguagePreference,
+  );
 
   if (isJsonOptions(options)) {
     const response = (await config.getBaseLlmClient().generateJson({
@@ -154,7 +240,7 @@ export async function runSideQuery<TResponse>(
       schema: options.schema,
       abortSignal: options.abortSignal,
       model,
-      systemInstruction: options.systemInstruction,
+      systemInstruction,
       promptId,
       config: requestConfig,
       ...(options.maxAttempts !== undefined && {
@@ -178,7 +264,7 @@ export async function runSideQuery<TResponse>(
   const result = await config.getBaseLlmClient().generateText({
     contents: options.contents,
     model,
-    systemInstruction: options.systemInstruction,
+    systemInstruction,
     abortSignal: options.abortSignal,
     promptId,
     config: requestConfig,

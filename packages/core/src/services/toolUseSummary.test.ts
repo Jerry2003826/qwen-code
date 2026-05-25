@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Config } from '../config/config.js';
 import {
@@ -182,6 +185,7 @@ describe('generateToolUseSummary', () => {
   const makeMockConfig = (
     fastModel: string | undefined,
     generateContentFn?: ReturnType<typeof vi.fn>,
+    outputLanguageFilePath?: string,
   ): Config => {
     const baseLlm = generateContentFn
       ? { generateText: generateContentFn }
@@ -193,10 +197,20 @@ describe('generateToolUseSummary', () => {
       getGeminiClient: () => (baseLlm ? {} : undefined),
       getBaseLlmClient: () => baseLlm,
       getModel: () => fastModel ?? 'main-model',
+      getOutputLanguageFilePath: () => outputLanguageFilePath,
     } as unknown as Config;
   };
 
   const abortController = (): AbortController => new AbortController();
+
+  function writeOutputLanguageFile(content: string): string {
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'qwen-tool-use-summary-'),
+    );
+    const file = path.join(dir, 'output-language.md');
+    fs.writeFileSync(file, content, 'utf8');
+    return file;
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -286,6 +300,30 @@ describe('generateToolUseSummary', () => {
       "User's intent (from assistant's last message):",
     );
     expect(userText).toContain('fix the authentication bug');
+  });
+
+  it('includes the configured output language preference in the summary prompt', async () => {
+    const generateContentFn = vi.fn().mockResolvedValue({
+      text: 'Searched in auth/',
+      usage: undefined,
+    });
+    const config = makeMockConfig(
+      'qwen-fast',
+      generateContentFn,
+      writeOutputLanguageFile('You MUST always respond in Chinese.'),
+    );
+
+    await generateToolUseSummary({
+      config,
+      tools: [{ name: 'Read', input: { file: 'a.ts' }, output: 'content' }],
+      signal: abortController().signal,
+    });
+
+    const options = generateContentFn.mock.calls[0][0];
+    expect(options.systemInstruction).toContain(TOOL_USE_SUMMARY_SYSTEM_PROMPT);
+    expect(options.systemInstruction).toContain(
+      'You MUST always respond in Chinese.',
+    );
   });
 
   it('truncates lastAssistantText to 200 chars', async () => {
