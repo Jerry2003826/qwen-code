@@ -544,7 +544,7 @@ describe('runSideQuery', () => {
       );
     });
 
-    it('memoizes output language preference reads by file path', async () => {
+    it('refreshes output language preference cache when the file changes', async () => {
       mockTextResult('ok');
       const file = writeOutputLanguageFile(
         'You MUST always respond in Chinese.',
@@ -559,7 +559,11 @@ describe('runSideQuery', () => {
         respectOutputLanguagePreference: true,
       });
 
-      fs.writeFileSync(file, 'You MUST always respond in English.', 'utf8');
+      fs.writeFileSync(
+        file,
+        'You MUST always respond in English for this updated preference.',
+        'utf8',
+      );
 
       await runSideQuery(mockConfig, {
         purpose: 'p',
@@ -572,11 +576,9 @@ describe('runSideQuery', () => {
       const secondCallArg = vi.mocked(mockBaseLlmClient.generateText).mock
         .calls[1][0];
       expect(secondCallArg.systemInstruction).toContain(
-        'You MUST always respond in Chinese.',
+        'You MUST always respond in English for this updated preference.',
       );
-      expect(secondCallArg.systemInstruction).not.toContain(
-        'You MUST always respond in English.',
-      );
+      expect(secondCallArg.systemInstruction).not.toContain('Chinese');
     });
 
     it('leaves text system instruction unchanged when output language path is undefined', async () => {

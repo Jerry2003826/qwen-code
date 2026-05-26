@@ -63,6 +63,7 @@ vi.mock('@qwen-code/qwen-code-core', async (importOriginal) => {
     await importOriginal<typeof import('@qwen-code/qwen-code-core')>();
   return {
     ...actual,
+    clearOutputLanguagePreferenceCache: vi.fn(),
     Storage: {
       getGlobalQwenDir: vi.fn().mockReturnValue('/mock/.qwen'),
       getGlobalSettingsPath: vi
@@ -77,6 +78,7 @@ import * as i18n from '../../i18n/index.js';
 import { SUPPORTED_LANGUAGES } from '../../i18n/languages.js';
 import { languageCommand } from './languageCommand.js';
 import { initializeLlmOutputLanguage } from '../../utils/languageUtils.js';
+import { clearOutputLanguagePreferenceCache } from '@qwen-code/qwen-code-core';
 
 describe('languageCommand', () => {
   let mockContext: CommandContext;
@@ -461,6 +463,9 @@ describe('languageCommand', () => {
         }
       ).config = {
         getModel: vi.fn().mockReturnValue('test-model'),
+        getOutputLanguageFilePath: vi
+          .fn()
+          .mockReturnValue('/mock/.qwen/output-language.md'),
         refreshHierarchicalMemory,
         getGeminiClient,
       };
@@ -471,6 +476,9 @@ describe('languageCommand', () => {
       );
 
       expect(refreshHierarchicalMemory).toHaveBeenCalledTimes(1);
+      expect(clearOutputLanguagePreferenceCache).toHaveBeenCalledWith(
+        '/mock/.qwen/output-language.md',
+      );
       expect(getGeminiClient).toHaveBeenCalledTimes(1);
       expect(refreshSystemInstruction).toHaveBeenCalledTimes(1);
       // Memory MUST be refreshed before the system instruction is rebuilt;

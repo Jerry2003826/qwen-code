@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import type {
   Content,
   GenerateContentConfig,
@@ -151,8 +151,19 @@ const OUTPUT_LANGUAGE_PREFERENCE_OVERRIDE =
   'This preference overrides any earlier language-selection rule in this system instruction.';
 const outputLanguagePreferenceCache = new Map<
   string,
-  Promise<string | undefined>
+  {
+    signature: string;
+    preference: Promise<string | undefined>;
+  }
 >();
+
+export function clearOutputLanguagePreferenceCache(filePath?: string): void {
+  if (filePath) {
+    outputLanguagePreferenceCache.delete(filePath);
+  } else {
+    outputLanguagePreferenceCache.clear();
+  }
+}
 
 async function readOutputLanguagePreference(
   config: Config,
@@ -160,14 +171,26 @@ async function readOutputLanguagePreference(
   const filePath = config.getOutputLanguageFilePath?.();
   if (!filePath) return undefined;
 
+  let signature: string;
+  try {
+    const stats = await stat(filePath);
+    signature = `${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    outputLanguagePreferenceCache.delete(filePath);
+    return undefined;
+  }
+
   let cached = outputLanguagePreferenceCache.get(filePath);
-  if (!cached) {
-    cached = readFile(filePath, 'utf8')
-      .then((content) => content.trim() || undefined)
-      .catch(() => undefined);
+  if (!cached || cached.signature !== signature) {
+    cached = {
+      signature,
+      preference: readFile(filePath, 'utf8')
+        .then((content) => content.trim() || undefined)
+        .catch(() => undefined),
+    };
     outputLanguagePreferenceCache.set(filePath, cached);
   }
-  return cached;
+  return cached.preference;
 }
 
 function appendSystemInstructionText(

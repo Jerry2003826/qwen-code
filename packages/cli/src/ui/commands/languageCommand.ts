@@ -29,7 +29,10 @@ import {
   resolveOutputLanguage,
   updateOutputLanguageFile,
 } from '../../utils/languageUtils.js';
-import { createDebugLogger } from '@qwen-code/qwen-code-core';
+import {
+  clearOutputLanguagePreferenceCache,
+  createDebugLogger,
+} from '@qwen-code/qwen-code-core';
 
 const debugLogger = createDebugLogger('LANGUAGE_COMMAND');
 
@@ -126,9 +129,11 @@ async function setOutputLanguage(
     const resolved = resolveOutputLanguage(language);
     // Save 'auto' as-is to settings, or normalize other values
     const settingValue = isAuto ? OUTPUT_LANGUAGE_AUTO : resolved;
+    const config = context.services.config;
 
     // Update the rule file with the resolved language
     updateOutputLanguageFile(settingValue);
+    clearOutputLanguagePreferenceCache(config?.getOutputLanguageFilePath?.());
 
     // Save to settings
     if (context.services.settings?.setValue) {
@@ -146,7 +151,6 @@ async function setOutputLanguage(
     // Apply the new rule to the running session: refresh hierarchical memory
     // so output-language.md is re-read into userMemory, then rebuild and
     // re-bind the system instruction on the live chat.
-    const config = context.services.config;
     if (config) {
       try {
         await config.refreshHierarchicalMemory();
