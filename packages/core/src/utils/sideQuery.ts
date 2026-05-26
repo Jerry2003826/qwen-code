@@ -147,6 +147,12 @@ function isJsonOptions<TResponse>(
 
 const OUTPUT_LANGUAGE_PREFERENCE_HEADER =
   'User output language preference from output-language.md:';
+const OUTPUT_LANGUAGE_PREFERENCE_OVERRIDE =
+  'This preference overrides any earlier language-selection rule in this system instruction.';
+const outputLanguagePreferenceCache = new Map<
+  string,
+  Promise<string | undefined>
+>();
 
 async function readOutputLanguagePreference(
   config: Config,
@@ -154,12 +160,14 @@ async function readOutputLanguagePreference(
   const filePath = config.getOutputLanguageFilePath?.();
   if (!filePath) return undefined;
 
-  try {
-    const content = await readFile(filePath, 'utf8');
-    return content.trim() || undefined;
-  } catch {
-    return undefined;
+  let cached = outputLanguagePreferenceCache.get(filePath);
+  if (!cached) {
+    cached = readFile(filePath, 'utf8')
+      .then((content) => content.trim() || undefined)
+      .catch(() => undefined);
+    outputLanguagePreferenceCache.set(filePath, cached);
   }
+  return cached;
 }
 
 function appendSystemInstructionText(
@@ -209,7 +217,7 @@ async function applyOutputLanguagePreference(
 
   return appendSystemInstructionText(
     systemInstruction,
-    `${OUTPUT_LANGUAGE_PREFERENCE_HEADER}\n${preference}`,
+    `${OUTPUT_LANGUAGE_PREFERENCE_HEADER}\n${preference}\n${OUTPUT_LANGUAGE_PREFERENCE_OVERRIDE}`,
   );
 }
 

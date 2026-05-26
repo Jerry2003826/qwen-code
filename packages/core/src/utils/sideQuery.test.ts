@@ -268,6 +268,9 @@ describe('runSideQuery', () => {
       expect(callArg.systemInstruction).toContain(
         'You MUST always respond in Chinese.',
       );
+      expect(callArg.systemInstruction).toContain(
+        'This preference overrides any earlier language-selection rule',
+      );
     });
 
     it('leaves JSON system instruction unchanged when output language path is undefined', async () => {
@@ -535,6 +538,44 @@ describe('runSideQuery', () => {
       );
       expect(callArg.systemInstruction).toContain(
         'You MUST always respond in Chinese.',
+      );
+      expect(callArg.systemInstruction).toContain(
+        'This preference overrides any earlier language-selection rule',
+      );
+    });
+
+    it('memoizes output language preference reads by file path', async () => {
+      mockTextResult('ok');
+      const file = writeOutputLanguageFile(
+        'You MUST always respond in Chinese.',
+      );
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(file);
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      fs.writeFileSync(file, 'You MUST always respond in English.', 'utf8');
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const secondCallArg = vi.mocked(mockBaseLlmClient.generateText).mock
+        .calls[1][0];
+      expect(secondCallArg.systemInstruction).toContain(
+        'You MUST always respond in Chinese.',
+      );
+      expect(secondCallArg.systemInstruction).not.toContain(
+        'You MUST always respond in English.',
       );
     });
 
