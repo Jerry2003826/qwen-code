@@ -1699,6 +1699,7 @@ export class ArenaManager {
             ],
           },
         ],
+        respectOutputLanguagePreference: true,
         abortSignal: AbortSignal.timeout(ARENA_SUMMARY_TIMEOUT_MS),
       });
 

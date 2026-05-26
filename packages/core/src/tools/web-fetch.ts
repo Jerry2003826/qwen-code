@@ -163,6 +163,7 @@ ${textContent}
         systemInstruction:
           'Extract and summarize the requested information from the provided web content. ' +
           'Be concise and accurate. Respond only with the requested information.',
+        respectOutputLanguagePreference: true,
         abortSignal: signal,
       });
       const resultText = result.text || '';

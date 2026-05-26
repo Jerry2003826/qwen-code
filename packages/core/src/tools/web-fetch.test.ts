@@ -5,6 +5,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { WebFetchTool } from './web-fetch.js';
 import type { Config } from '../config/config.js';
 import { ApprovalMode } from '../config/config.js';
@@ -41,6 +44,7 @@ describe('WebFetchTool', () => {
       getFastModel: vi.fn(() => undefined),
       getSessionId: vi.fn(() => 'test-session-id'),
       getModel: vi.fn(() => 'qwen-coder'),
+      getOutputLanguageFilePath: vi.fn(() => undefined),
     } as unknown as Config;
   });
 
@@ -242,6 +246,42 @@ describe('WebFetchTool', () => {
       await invocation.execute(new AbortController().signal);
 
       expect(receivedContent).toContain('Plain text content here');
+    });
+
+    it('should include configured output language preference when processing web content', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-web-fetch-'));
+      const outputLanguageFile = path.join(dir, 'output-language.md');
+      fs.writeFileSync(
+        outputLanguageFile,
+        'You MUST always respond in Chinese.',
+        'utf8',
+      );
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        outputLanguageFile,
+      );
+      vi.spyOn(fetchUtils, 'fetchWithTimeout').mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'content-type': 'text/plain' }),
+        text: () => Promise.resolve('Plain text content here'),
+      } as Response);
+      mockGenerateContent.mockResolvedValue({
+        text: 'Processed',
+        usage: undefined,
+      });
+
+      const tool = new WebFetchTool(mockConfig);
+      const params = {
+        url: 'https://example.com',
+        prompt: 'summarize',
+        format: 'text' as const,
+      };
+      const invocation = tool.build(params);
+      await invocation.execute(new AbortController().signal);
+
+      const callArg = mockGenerateContent.mock.calls[0]?.[0];
+      expect(callArg.systemInstruction).toContain(
+        'You MUST always respond in Chinese.',
+      );
     });
   });
 

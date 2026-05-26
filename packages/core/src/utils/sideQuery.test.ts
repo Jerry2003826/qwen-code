@@ -269,6 +269,30 @@ describe('runSideQuery', () => {
         'You MUST always respond in Chinese.',
       );
     });
+
+    it('leaves JSON system instruction unchanged when output language path is missing', async () => {
+      vi.mocked(mockBaseLlmClient.generateJson).mockResolvedValue({ ok: true });
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        path.join(os.tmpdir(), 'qwen-side-query-missing.md'),
+      );
+
+      await runSideQuery<{ ok: boolean }>(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+          required: ['ok'],
+        },
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom JSON side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateJson).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toBe('custom JSON side query prompt');
+    });
   });
 
   describe('text mode (no schema)', () => {
@@ -464,6 +488,41 @@ describe('runSideQuery', () => {
       expect(callArg.systemInstruction).toContain(
         'You MUST always respond in Chinese.',
       );
+    });
+
+    it('leaves text system instruction unchanged when output language path is undefined', async () => {
+      mockTextResult('ok');
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateText).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toBe('custom text side query prompt');
+    });
+
+    it('leaves text system instruction unchanged when output language file is blank', async () => {
+      mockTextResult('ok');
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        writeOutputLanguageFile(' \n\t '),
+      );
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateText).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toBe('custom text side query prompt');
     });
   });
 });

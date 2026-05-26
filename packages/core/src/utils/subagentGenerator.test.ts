@@ -13,6 +13,9 @@ import {
   type Mock,
   afterEach,
 } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import type { BaseLlmClient } from '../core/baseLlmClient.js';
 import type { Config } from '../config/config.js';
 import {
@@ -35,6 +38,7 @@ describe('subagentGenerator', () => {
     mockConfig = {
       getBaseLlmClient: vi.fn().mockReturnValue(mockClient),
       getModel: vi.fn().mockReturnValue('qwen3-coder-plus'),
+      getOutputLanguageFilePath: vi.fn().mockReturnValue(undefined),
     } as unknown as Config;
   });
 
@@ -91,6 +95,33 @@ describe('subagentGenerator', () => {
     expect(callParams.model).toBe('qwen3-coder-plus');
     expect(callParams.systemInstruction).toContain(
       'You are an elite AI agent architect',
+    );
+  });
+
+  it('should include configured output language preference in generated subagent artifacts', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qwen-subagent-'));
+    const outputLanguageFile = path.join(dir, 'output-language.md');
+    fs.writeFileSync(
+      outputLanguageFile,
+      'You MUST always respond in Chinese.',
+      'utf8',
+    );
+    vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+      outputLanguageFile,
+    );
+    const mockApiResponse: SubagentGeneratedContent = {
+      name: 'code-review-assistant',
+      description: 'Reviews code in the requested language.',
+      systemPrompt: 'You are a code review expert.',
+    };
+    (mockClient.generateJson as Mock).mockResolvedValue(mockApiResponse);
+
+    await subagentGenerator('help with code reviews', mockConfig, abortSignal);
+
+    const generateJsonCall = (mockClient.generateJson as Mock).mock.calls[0];
+    const callParams = generateJsonCall[0];
+    expect(callParams.systemInstruction).toContain(
+      'You MUST always respond in Chinese.',
     );
   });
 

@@ -451,22 +451,32 @@ index 111..222 100644
     });
 
     it('routes all approach summaries through the chokepoint, not per-agent generators', async () => {
-      const summaryGenerateText = vi
-        .fn()
-        .mockResolvedValueOnce({
-          text: JSON.stringify({
-            summary: 'Model 1 used a strategy pattern.',
-          }),
-          usage: undefined,
-        })
-        .mockResolvedValueOnce({
-          text: JSON.stringify({
-            summary: 'Model 2 made inline edits.',
-          }),
-          usage: undefined,
-        });
+      const summaryGenerateText = vi.fn(
+        async (options: {
+          contents: Array<{ parts: Array<{ text: string }> }>;
+        }) => {
+          const prompt = options.contents[0]?.parts[0]?.text ?? '';
+          const summary = prompt.includes('"agentId": "model-1"')
+            ? 'Model 1 used a strategy pattern.'
+            : 'Model 2 made inline edits.';
+
+          return {
+            text: JSON.stringify({
+              summary,
+            }),
+            usage: undefined,
+          };
+        },
+      );
+      const outputLanguageFile = path.join(tempDir, 'output-language.md');
+      await fs.writeFile(
+        outputLanguageFile,
+        'You MUST always respond in Chinese.',
+        'utf8',
+      );
       const config = {
         ...mockConfig,
+        getOutputLanguageFilePath: () => outputLanguageFile,
         getBaseLlmClient: () => ({
           generateText: summaryGenerateText,
         }),
@@ -506,6 +516,14 @@ index 111..222 100644
       const allPrompts = callPrompts.join('\n');
       expect(allPrompts).toContain('"agentId": "model-1"');
       expect(allPrompts).toContain('"agentId": "model-2"');
+      const systemInstructions = summaryGenerateText.mock.calls.map(
+        (call: unknown[]) =>
+          (call[0] as { systemInstruction?: string }).systemInstruction ?? '',
+      );
+      expect(systemInstructions).toEqual([
+        expect.stringContaining('You MUST always respond in Chinese.'),
+        expect.stringContaining('You MUST always respond in Chinese.'),
+      ]);
 
       expect(result.agents[0]?.approachSummary).toBe(
         'Model 1 used a strategy pattern.',

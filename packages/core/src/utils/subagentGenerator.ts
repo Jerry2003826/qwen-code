@@ -131,6 +131,7 @@ export async function subagentGenerator(
       schema: RESPONSE_SCHEMA,
       abortSignal,
       systemInstruction: SYSTEM_PROMPT,
+      respectOutputLanguagePreference: true,
       purpose: 'subagent-generator',
       // Subagent specs are user-facing artifacts that get reused indefinitely.
       // Pin to the main model and keep reasoning on — quality matters more
