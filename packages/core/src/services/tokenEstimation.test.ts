@@ -9,6 +9,7 @@ import type { Content } from '@google/genai';
 import {
   estimateContentTokens,
   estimatePromptTokens,
+  getUsageOutputTokenCountForPromptEstimate,
 } from './tokenEstimation.js';
 
 const textContent = (text: string): Content => ({
@@ -105,5 +106,17 @@ describe('estimatePromptTokens', () => {
   it('falls back to full estimate when lastPromptTokenCount is 0', () => {
     const fullEst = estimateContentTokens([...history, user]);
     expect(estimatePromptTokens(history, user, 0)).toBe(fullEst);
+  });
+});
+
+describe('getUsageOutputTokenCountForPromptEstimate', () => {
+  it('clamps negative disjoint output token counts to zero', () => {
+    expect(
+      getUsageOutputTokenCountForPromptEstimate({
+        promptTokenCount: 100,
+        candidatesTokenCount: -10,
+        thoughtsTokenCount: -5,
+      }),
+    ).toBe(0);
   });
 });

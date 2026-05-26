@@ -93,5 +93,8 @@ export function getUsageOutputTokenCountForPromptEstimate(
   if (usage.totalTokenCount !== undefined) {
     return Math.max(0, usage.totalTokenCount - usage.promptTokenCount);
   }
-  return (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0);
+  return Math.max(
+    0,
+    (usage.candidatesTokenCount ?? 0) + (usage.thoughtsTokenCount ?? 0),
+  );
 }
