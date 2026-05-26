@@ -280,6 +280,9 @@ describe('WebFetchTool', () => {
 
       const callArg = mockGenerateContent.mock.calls[0]?.[0];
       expect(callArg.systemInstruction).toContain(
+        'Extract and summarize the requested information',
+      );
+      expect(callArg.systemInstruction).toContain(
         'You MUST always respond in Chinese.',
       );
     });

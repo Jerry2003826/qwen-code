@@ -270,10 +270,58 @@ describe('runSideQuery', () => {
       );
     });
 
-    it('leaves JSON system instruction unchanged when output language path is missing', async () => {
+    it('leaves JSON system instruction unchanged when output language path is undefined', async () => {
+      vi.mocked(mockBaseLlmClient.generateJson).mockResolvedValue({ ok: true });
+
+      await runSideQuery<{ ok: boolean }>(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+          required: ['ok'],
+        },
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom JSON side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateJson).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toBe('custom JSON side query prompt');
+    });
+
+    it('leaves JSON system instruction unchanged when output language file is missing', async () => {
+      vi.mocked(mockBaseLlmClient.generateJson).mockResolvedValue({ ok: true });
+      const dir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'qwen-side-query-missing-'),
+      );
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        path.join(dir, 'output-language.md'),
+      );
+
+      await runSideQuery<{ ok: boolean }>(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        schema: {
+          type: 'object',
+          properties: { ok: { type: 'boolean' } },
+          required: ['ok'],
+        },
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom JSON side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateJson).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toBe('custom JSON side query prompt');
+    });
+
+    it('leaves JSON system instruction unchanged when output language file is blank', async () => {
       vi.mocked(mockBaseLlmClient.generateJson).mockResolvedValue({ ok: true });
       vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
-        path.join(os.tmpdir(), 'qwen-side-query-missing.md'),
+        writeOutputLanguageFile(' \n\t '),
       );
 
       await runSideQuery<{ ok: boolean }>(mockConfig, {
@@ -492,6 +540,28 @@ describe('runSideQuery', () => {
 
     it('leaves text system instruction unchanged when output language path is undefined', async () => {
       mockTextResult('ok');
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const callArg = vi.mocked(mockBaseLlmClient.generateText).mock
+        .calls[0][0];
+      expect(callArg.systemInstruction).toBe('custom text side query prompt');
+    });
+
+    it('leaves text system instruction unchanged when output language file is missing', async () => {
+      mockTextResult('ok');
+      const dir = fs.mkdtempSync(
+        path.join(os.tmpdir(), 'qwen-side-query-missing-'),
+      );
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        path.join(dir, 'output-language.md'),
+      );
 
       await runSideQuery(mockConfig, {
         purpose: 'p',

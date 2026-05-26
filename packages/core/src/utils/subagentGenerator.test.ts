@@ -121,6 +121,9 @@ describe('subagentGenerator', () => {
     const generateJsonCall = (mockClient.generateJson as Mock).mock.calls[0];
     const callParams = generateJsonCall[0];
     expect(callParams.systemInstruction).toContain(
+      'You are an elite AI agent architect',
+    );
+    expect(callParams.systemInstruction).toContain(
       'You MUST always respond in Chinese.',
     );
   });
