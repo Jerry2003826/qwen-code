@@ -374,6 +374,29 @@ describe('mcp-client', () => {
         expect(await response.text()).toBe('method not allowed');
       });
 
+      it('does not rewrite resumable GET SSE errors with Last-Event-ID', async () => {
+        const fetchFn = vi
+          .fn<typeof fetch>()
+          .mockResolvedValue(
+            new Response('{"error":"invalid cursor"}', { status: 400 }),
+          );
+        const fetchWithFallback = createStreamableHttpCompatibilityFetch(
+          'resume-error',
+          fetchFn,
+        );
+
+        const response = await fetchWithFallback('http://test-server/mcp', {
+          method: 'GET',
+          headers: {
+            Accept: 'text/event-stream',
+            'Last-Event-ID': 'event-123',
+          },
+        });
+
+        expect(response.status).toBe(400);
+        expect(await response.text()).toBe('{"error":"invalid cursor"}');
+      });
+
       it('does not rewrite non-SSE GET responses', async () => {
         const fetchFn = vi
           .fn<typeof fetch>()

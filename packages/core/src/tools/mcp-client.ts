@@ -63,6 +63,23 @@ export const MCP_DEFAULT_TIMEOUT_MSEC = 10 * 60 * 1000; // default to 10 minutes
 const debugLogger = createDebugLogger('MCP');
 
 const STREAMABLE_HTTP_GET_SSE_FALLBACK_STATUSES = new Set([400]);
+const STREAMABLE_HTTP_GET_SSE_ERROR_BODY_LIMIT = 512;
+
+async function readResponseBodyExcerpt(
+  response: Response,
+): Promise<string | undefined> {
+  try {
+    const body = (await response.clone().text()).trim();
+    if (!body) {
+      return undefined;
+    }
+    return body.length > STREAMABLE_HTTP_GET_SSE_ERROR_BODY_LIMIT
+      ? `${body.slice(0, STREAMABLE_HTTP_GET_SSE_ERROR_BODY_LIMIT)}...`
+      : body;
+  } catch {
+    return undefined;
+  }
+}
 
 function isStreamableHttpGetSseRequest(init?: RequestInit): boolean {
   const method = (init?.method ?? 'GET').toUpperCase();
@@ -70,7 +87,12 @@ function isStreamableHttpGetSseRequest(init?: RequestInit): boolean {
     return false;
   }
 
-  const accept = new Headers(init?.headers).get('accept') ?? '';
+  const headers = new Headers(init?.headers);
+  if (headers.has('last-event-id')) {
+    return false;
+  }
+
+  const accept = headers.get('accept') ?? '';
   return accept
     .split(',')
     .map((value) => value.split(';')[0].trim().toLowerCase())
@@ -98,13 +120,15 @@ export function createStreamableHttpCompatibilityFetch(
       return response;
     }
 
+    const responseBody = await readResponseBodyExcerpt(response);
     await response.body?.cancel().catch(() => {
       // Best-effort body cleanup before returning a synthetic 405.
     });
     debugLogger.warn(
       `MCP server '${mcpServerName}' rejected the optional Streamable HTTP ` +
         `GET SSE stream with HTTP ${response.status}; continuing without ` +
-        `the standalone GET stream. POST request streams remain enabled.`,
+        `the standalone GET stream. POST request streams remain enabled.` +
+        (responseBody ? ` Response body: ${JSON.stringify(responseBody)}` : ''),
     );
 
     return new Response(null, {
