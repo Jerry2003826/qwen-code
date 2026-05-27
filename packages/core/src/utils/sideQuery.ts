@@ -157,6 +157,13 @@ const outputLanguagePreferenceCache = new Map<
   }
 >();
 
+/**
+ * Clears the side-query output-language preference cache.
+ *
+ * This is a performance hint for callers that just rewrote the preference
+ * file. Correctness still comes from the stat-based signature check in
+ * `readOutputLanguagePreference`.
+ */
 export function clearOutputLanguagePreferenceCache(filePath?: string): void {
   if (filePath) {
     outputLanguagePreferenceCache.delete(filePath);
