@@ -587,9 +587,42 @@ describe('runSideQuery', () => {
 
     it('clears one cached output language preference by file path', async () => {
       mockTextResult('ok');
-      const file = writeOutputLanguageFile('Always answer in Spanish.');
-      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(file);
+      const firstFile = writeOutputLanguageFile('Always answer in Spanish.');
+      const secondFile = writeOutputLanguageFile('Always answer in German.');
+      const stableMtime = new Date('2026-01-01T00:00:00.000Z');
+      fs.utimesSync(firstFile, stableMtime, stableMtime);
+      fs.utimesSync(secondFile, stableMtime, stableMtime);
 
+      for (const file of [firstFile, secondFile]) {
+        vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(file);
+        await runSideQuery(mockConfig, {
+          purpose: 'p',
+          contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+          abortSignal: abortController.signal,
+          systemInstruction: 'custom text side query prompt',
+          respectOutputLanguagePreference: true,
+        });
+      }
+
+      fs.writeFileSync(firstFile, 'Always answer in Italian.', 'utf8');
+      fs.writeFileSync(secondFile, 'Always answer in French.', 'utf8');
+      fs.utimesSync(firstFile, stableMtime, stableMtime);
+      fs.utimesSync(secondFile, stableMtime, stableMtime);
+      clearOutputLanguagePreferenceCache(firstFile);
+
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        firstFile,
+      );
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        secondFile,
+      );
       await runSideQuery(mockConfig, {
         purpose: 'p',
         contents: [{ role: 'user', parts: [{ text: 'q' }] }],
@@ -598,23 +631,15 @@ describe('runSideQuery', () => {
         respectOutputLanguagePreference: true,
       });
 
-      const stats = fs.statSync(file);
-      fs.writeFileSync(file, 'Always answer in Italian.', 'utf8');
-      fs.utimesSync(file, stats.atime, stats.mtime);
-      clearOutputLanguagePreferenceCache(file);
-
-      await runSideQuery(mockConfig, {
-        purpose: 'p',
-        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
-        abortSignal: abortController.signal,
-        systemInstruction: 'custom text side query prompt',
-        respectOutputLanguagePreference: true,
-      });
-
-      const secondCallArg = vi.mocked(mockBaseLlmClient.generateText).mock
-        .calls[1][0];
-      expect(secondCallArg.systemInstruction).toContain(
+      const calls = vi.mocked(mockBaseLlmClient.generateText).mock.calls;
+      expect(calls.at(-2)?.[0].systemInstruction).toContain(
         'Always answer in Italian.',
+      );
+      expect(calls.at(-1)?.[0].systemInstruction).toContain(
+        'Always answer in German.',
+      );
+      expect(calls.at(-1)?.[0].systemInstruction).not.toContain(
+        'Always answer in French.',
       );
     });
 

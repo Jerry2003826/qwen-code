@@ -119,7 +119,8 @@ export const summaryCommand: SlashCommand = {
             ],
           },
         ],
-        respectOutputLanguagePreference: true,
+        // The carried-over chat system instruction already includes the
+        // configured output-language.md rule through user memory.
         abortSignal: abortSignal ?? new AbortController().signal,
       });
 
