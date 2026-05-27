@@ -189,12 +189,19 @@ async function readOutputLanguagePreference(
 
   let cached = outputLanguagePreferenceCache.get(filePath);
   if (!cached || cached.signature !== signature) {
-    cached = {
+    const cacheEntry = {
       signature,
-      preference: readFile(filePath, 'utf8')
-        .then((content) => content.trim() || undefined)
-        .catch(() => undefined),
+      preference: Promise.resolve<string | undefined>(undefined),
     };
+    cacheEntry.preference = readFile(filePath, 'utf8')
+      .then((content) => content.trim() || undefined)
+      .catch(() => {
+        if (outputLanguagePreferenceCache.get(filePath) === cacheEntry) {
+          outputLanguagePreferenceCache.delete(filePath);
+        }
+        return undefined;
+      });
+    cached = cacheEntry;
     outputLanguagePreferenceCache.set(filePath, cached);
   }
   return cached.preference;

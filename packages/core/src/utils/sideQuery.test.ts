@@ -5,6 +5,7 @@
  */
 
 import * as fs from 'node:fs';
+import { readFile as readFileAsync } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -14,6 +15,17 @@ import {
   clearOutputLanguagePreferenceCache,
   runSideQuery,
 } from './sideQuery.js';
+
+vi.mock('node:fs/promises', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:fs/promises')>(
+      'node:fs/promises',
+    );
+  return {
+    ...actual,
+    readFile: vi.fn(actual.readFile),
+  };
+});
 
 describe('runSideQuery', () => {
   let mockBaseLlmClient: BaseLlmClient;
@@ -640,6 +652,38 @@ describe('runSideQuery', () => {
       );
       expect(calls.at(-1)?.[0].systemInstruction).not.toContain(
         'Always answer in French.',
+      );
+    });
+
+    it('does not cache transient output language read failures', async () => {
+      mockTextResult('ok');
+      const file = writeOutputLanguageFile('Always answer in Japanese.');
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(file);
+      vi.mocked(readFileAsync).mockRejectedValueOnce(
+        new Error('transient read failure'),
+      );
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const calls = vi.mocked(mockBaseLlmClient.generateText).mock.calls;
+      expect(calls[0][0].systemInstruction).toBe(
+        'custom text side query prompt',
+      );
+      expect(calls[1][0].systemInstruction).toContain(
+        'Always answer in Japanese.',
       );
     });
 
