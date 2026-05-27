@@ -10,7 +10,10 @@ import * as path from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { BaseLlmClient } from '../core/baseLlmClient.js';
 import type { Config } from '../config/config.js';
-import { runSideQuery } from './sideQuery.js';
+import {
+  clearOutputLanguagePreferenceCache,
+  runSideQuery,
+} from './sideQuery.js';
 
 describe('runSideQuery', () => {
   let mockBaseLlmClient: BaseLlmClient;
@@ -18,6 +21,7 @@ describe('runSideQuery', () => {
   let abortController: AbortController;
 
   beforeEach(() => {
+    clearOutputLanguagePreferenceCache();
     abortController = new AbortController();
     mockBaseLlmClient = {
       generateJson: vi.fn(),
@@ -579,6 +583,94 @@ describe('runSideQuery', () => {
         'You MUST always respond in English for this updated preference.',
       );
       expect(secondCallArg.systemInstruction).not.toContain('Chinese');
+    });
+
+    it('clears one cached output language preference by file path', async () => {
+      mockTextResult('ok');
+      const file = writeOutputLanguageFile('Always answer in Spanish.');
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(file);
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const stats = fs.statSync(file);
+      fs.writeFileSync(file, 'Always answer in Italian.', 'utf8');
+      fs.utimesSync(file, stats.atime, stats.mtime);
+      clearOutputLanguagePreferenceCache(file);
+
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const secondCallArg = vi.mocked(mockBaseLlmClient.generateText).mock
+        .calls[1][0];
+      expect(secondCallArg.systemInstruction).toContain(
+        'Always answer in Italian.',
+      );
+    });
+
+    it('clears every cached output language preference when no file path is provided', async () => {
+      mockTextResult('ok');
+      const firstFile = writeOutputLanguageFile('Always answer in Spanish.');
+      const secondFile = writeOutputLanguageFile('Always answer in German..');
+
+      for (const file of [firstFile, secondFile]) {
+        vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(file);
+        await runSideQuery(mockConfig, {
+          purpose: 'p',
+          contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+          abortSignal: abortController.signal,
+          systemInstruction: 'custom text side query prompt',
+          respectOutputLanguagePreference: true,
+        });
+        const stats = fs.statSync(file);
+        const updated =
+          file === firstFile
+            ? 'Always answer in Italian.'
+            : 'Always answer in French..';
+        fs.writeFileSync(file, updated, 'utf8');
+        fs.utimesSync(file, stats.atime, stats.mtime);
+      }
+
+      clearOutputLanguagePreferenceCache();
+
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        firstFile,
+      );
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+      vi.mocked(mockConfig.getOutputLanguageFilePath).mockReturnValue(
+        secondFile,
+      );
+      await runSideQuery(mockConfig, {
+        purpose: 'p',
+        contents: [{ role: 'user', parts: [{ text: 'q' }] }],
+        abortSignal: abortController.signal,
+        systemInstruction: 'custom text side query prompt',
+        respectOutputLanguagePreference: true,
+      });
+
+      const calls = vi.mocked(mockBaseLlmClient.generateText).mock.calls;
+      expect(calls.at(-2)?.[0].systemInstruction).toContain(
+        'Always answer in Italian.',
+      );
+      expect(calls.at(-1)?.[0].systemInstruction).toContain(
+        'Always answer in French..',
+      );
     });
 
     it('leaves text system instruction unchanged when output language path is undefined', async () => {

@@ -119,6 +119,7 @@ export const summaryCommand: SlashCommand = {
             ],
           },
         ],
+        respectOutputLanguagePreference: true,
         abortSignal: abortSignal ?? new AbortController().signal,
       });
 

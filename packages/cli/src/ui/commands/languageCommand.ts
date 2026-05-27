@@ -133,7 +133,9 @@ async function setOutputLanguage(
 
     // Update the rule file with the resolved language
     updateOutputLanguageFile(settingValue);
-    clearOutputLanguagePreferenceCache(config?.getOutputLanguageFilePath?.());
+    // updateOutputLanguageFile writes the global rule file; clear every cached
+    // side-query preference so project/global path differences cannot go stale.
+    clearOutputLanguagePreferenceCache();
 
     // Save to settings
     if (context.services.settings?.setValue) {

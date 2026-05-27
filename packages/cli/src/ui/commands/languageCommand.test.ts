@@ -476,9 +476,7 @@ describe('languageCommand', () => {
       );
 
       expect(refreshHierarchicalMemory).toHaveBeenCalledTimes(1);
-      expect(clearOutputLanguagePreferenceCache).toHaveBeenCalledWith(
-        '/mock/.qwen/output-language.md',
-      );
+      expect(clearOutputLanguagePreferenceCache).toHaveBeenCalledWith();
       expect(getGeminiClient).toHaveBeenCalledTimes(1);
       expect(refreshSystemInstruction).toHaveBeenCalledTimes(1);
       // Memory MUST be refreshed before the system instruction is rebuilt;
