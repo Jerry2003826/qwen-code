@@ -1612,7 +1612,7 @@ describe('Session', () => {
         expect(mockGeminiClient.tryCompressChat).toHaveBeenCalled();
         expect(mockChat.sendMessageStream).not.toHaveBeenCalled();
         expect(mockChat.addHistory).not.toHaveBeenCalled();
-        expect(getSessionModelFacingUserTurnCount(session)).toBe(0);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
         expect(mockClient.sessionUpdate).not.toHaveBeenCalledWith({
           sessionId: 'test-session-id',
           update: {
@@ -1757,7 +1757,7 @@ describe('Session', () => {
           .mockResolvedValueOnce({
             originalTokenCount: 101,
             newTokenCount: 101,
-            compressionStatus: core.CompressionStatus.NOOP,
+            compressionStatus: core.CompressionStatus.COMPRESSED,
           });
         mockChat.sendMessageStream = vi
           .fn()
@@ -1973,7 +1973,7 @@ describe('Session', () => {
           .mockResolvedValueOnce({
             originalTokenCount: 101,
             newTokenCount: 101,
-            compressionStatus: core.CompressionStatus.NOOP,
+            compressionStatus: core.CompressionStatus.COMPRESSED,
           });
         mockChat.getHistory = vi
           .fn()
@@ -1999,7 +1999,7 @@ describe('Session', () => {
           expect.any(AbortSignal),
         );
         expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(1);
-        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
         expect(mockClient.sessionUpdate).toHaveBeenCalledWith({
           sessionId: 'test-session-id',
           update: {
@@ -2086,7 +2086,7 @@ describe('Session', () => {
           .mockResolvedValueOnce({
             originalTokenCount: 101,
             newTokenCount: 101,
-            compressionStatus: core.CompressionStatus.NOOP,
+            compressionStatus: core.CompressionStatus.COMPRESSED,
           });
         mockChat.sendMessageStream = vi
           .fn()
@@ -2109,6 +2109,7 @@ describe('Session', () => {
           expect.any(AbortSignal),
         );
         expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(1);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
         expect(mockClient.sessionUpdate).toHaveBeenCalledWith({
           sessionId: 'test-session-id',
           update: {

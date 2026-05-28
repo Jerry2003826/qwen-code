@@ -131,8 +131,16 @@ import {
 const debugLogger = createDebugLogger('SESSION');
 
 type AutoCompressionSendResult =
-  | { responseStream: AsyncGenerator<StreamEvent>; stopReason?: never }
-  | { responseStream: null; stopReason: PromptResponse['stopReason'] };
+  | {
+      responseStream: AsyncGenerator<StreamEvent>;
+      stopReason?: never;
+      historyCompressed?: boolean;
+    }
+  | {
+      responseStream: null;
+      stopReason: PromptResponse['stopReason'];
+      historyCompressed?: boolean;
+    };
 
 export interface HistorySnapshot {
   history: Content[];
@@ -810,7 +818,10 @@ export class Session implements SessionContext {
               pendingSend.signal,
             );
             if (!sendResult.responseStream) {
-              if (sendResult.stopReason !== 'cancelled') {
+              if (
+                sendResult.stopReason !== 'cancelled' &&
+                !sendResult.historyCompressed
+              ) {
                 this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
               }
               this.#preserveUnsentMessageHistory(
@@ -1080,7 +1091,10 @@ export class Session implements SessionContext {
                 { skipCompression: stopHookIterationCount > 1 },
               );
             if (!continueSendResult.responseStream) {
-              if (continueSendResult.stopReason !== 'cancelled') {
+              if (
+                continueSendResult.stopReason !== 'cancelled' &&
+                !continueSendResult.historyCompressed
+              ) {
                 this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
               }
               this.#preserveUnsentMessageHistory(
@@ -1244,6 +1258,7 @@ export class Session implements SessionContext {
     const geminiClient = this.config.getGeminiClient()!;
     let compressionDiagnostic: string | null = null;
     let compressionInfo: ChatCompressionInfo | null = null;
+    let historyCompressed = false;
     if (!options.skipCompression) {
       try {
         const compressed = await geminiClient.tryCompressChat(
@@ -1254,6 +1269,7 @@ export class Session implements SessionContext {
         compressionInfo = compressed;
         this.#recordCompressionTokenCount(compressed);
         if (compressed.compressionStatus === CompressionStatus.COMPRESSED) {
+          historyCompressed = true;
           compressionDiagnostic =
             `IMPORTANT: This conversation approached the input token limit for ${this.config.getModel()}. ` +
             `A compressed context will be sent for future messages (compressed from: ` +
@@ -1295,7 +1311,11 @@ export class Session implements SessionContext {
             'Please start a new session or increase the sessionTokenLimit in your settings.json.',
           `Failed to emit token limit diagnostic for prompt ${promptId}`,
         );
-        return { responseStream: null, stopReason: 'max_tokens' };
+        return {
+          responseStream: null,
+          stopReason: 'max_tokens',
+          historyCompressed,
+        };
       }
     }
 
@@ -1323,7 +1343,7 @@ export class Session implements SessionContext {
       },
       promptId,
     );
-    return { responseStream };
+    return { responseStream, historyCompressed };
   }
 
   #preserveUnsentMessageHistory(
@@ -1564,7 +1584,10 @@ export class Session implements SessionContext {
               ac.signal,
             );
             if (!sendResult.responseStream) {
-              if (sendResult.stopReason !== 'cancelled') {
+              if (
+                sendResult.stopReason !== 'cancelled' &&
+                !sendResult.historyCompressed
+              ) {
                 this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
               }
               this.#preserveUnsentMessageHistory(
