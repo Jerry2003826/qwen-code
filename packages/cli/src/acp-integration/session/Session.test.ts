@@ -169,6 +169,34 @@ describe('computeInitialModelFacingUserTurnCountFromHistory', () => {
       ),
     ).toBe(2);
   });
+
+  it('classifies multi-part user records after joining text parts', () => {
+    expect(
+      computeInitialModelFacingUserTurnCountFromHistory(
+        [
+          chatRecord({
+            uuid: 'multi-part-prompt',
+            message: {
+              parts: [{ text: 'please' }, { text: 'continue' }],
+            },
+          }),
+          chatRecord({
+            uuid: 'split-question-command',
+            message: {
+              parts: [{ text: '?' }, { text: 'help' }],
+            },
+          }),
+          chatRecord({
+            uuid: 'split-slash-command',
+            message: {
+              parts: [{ text: '/' }, { text: 'clear' }],
+            },
+          }),
+        ],
+        'test-session-id',
+      ),
+    ).toBe(1);
+  });
 });
 
 // Helper to create empty async generator (avoids memory leak from inline generators)
@@ -757,6 +785,32 @@ describe('Session', () => {
           role: 'model',
           parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
         },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+        { role: 'user', parts: [{ text: 'fourth' }] },
+      ];
+
+      session.restoreHistory(history);
+
+      expect(mockChat.setHistory).toHaveBeenCalledWith(history);
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
+    it('derives model-facing turn count with startup context and compression', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 99 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'startup context' }] },
+        { role: 'model', parts: [{ text: core.STARTUP_CONTEXT_MODEL_ACK }] },
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        {
+          role: 'user',
+          parts: [{ text: core.COMPRESSION_CONTINUATION_BRIDGE }],
+        },
+        { role: 'model', parts: [{ text: 'continued response' }] },
         { role: 'user', parts: [{ text: 'third' }] },
         { role: 'model', parts: [{ text: 'third reply' }] },
         { role: 'user', parts: [{ text: 'fourth' }] },
@@ -1591,7 +1645,7 @@ describe('Session', () => {
         expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(1);
       });
 
-      it('stops before sending when the compressed prompt exceeds the session token limit', async () => {
+      it('keeps model-facing turn count when compressed send is stopped before streaming', async () => {
         mockConfig.getSessionTokenLimit = vi.fn().mockReturnValue(100);
         mockGeminiClient.tryCompressChat.mockResolvedValueOnce({
           originalTokenCount: 1200,
