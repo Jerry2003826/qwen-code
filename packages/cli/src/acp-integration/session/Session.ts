@@ -23,6 +23,8 @@ import type {
   MessageBus,
   StreamEvent,
   ChatCompressionInfo,
+  AutoModeDecision,
+  AutoModeOutcome,
 } from '@qwen-code/qwen-code-core';
 import {
   AuthType,
@@ -61,11 +63,13 @@ import {
   formatStopHookBlockingCapWarning,
   applyAutoModeDecision,
   evaluateAutoMode,
+  getAutoModePermissionDeniedReason,
   isApproveOutcome,
   MAX_TRANSCRIPT_MESSAGES,
   recordAllow,
   recordFallbackApprove,
   shouldFallback,
+  shouldFirePermissionDeniedForAutoMode,
   shouldRunAutoModeForCall,
 } from '@qwen-code/qwen-code-core';
 import { getCommandSubcommandNames } from '../../services/commandMetadata.js';
@@ -215,6 +219,31 @@ export function computeInitialModelFacingUserTurnCountFromHistory(
     (record) =>
       record.sessionId === sessionId && isModelFacingUserPromptRecord(record),
   ).length;
+}
+
+export async function fireSessionPermissionDeniedForAutoMode(
+  config: Config,
+  decision: AutoModeDecision,
+  outcome: AutoModeOutcome,
+  toolName: string,
+  toolParams: Record<string, unknown>,
+  callId: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (
+    !config.getDisableAllHooks?.() &&
+    shouldFirePermissionDeniedForAutoMode(decision, outcome)
+  ) {
+    await config
+      .getHookSystem?.()
+      ?.firePermissionDeniedEvent(
+        toolName,
+        toolParams,
+        callId,
+        getAutoModePermissionDeniedReason(decision),
+        signal,
+      );
+  }
 }
 
 function getRecordPromptIds(record: ChatRecord): string[] {
@@ -1271,8 +1300,12 @@ export class Session implements SessionContext {
         this.#recordCompressionTokenCount(compressed);
         if (compressed.compressionStatus === CompressionStatus.COMPRESSED) {
           historyCompressed = true;
+          const reasonClause =
+            compressed.triggerReason === 'image_overflow'
+              ? `accumulated enough tool screenshots to trigger compaction for ${this.config.getModel()}`
+              : `approached the input token limit for ${this.config.getModel()}`;
           compressionDiagnostic =
-            `IMPORTANT: This conversation approached the input token limit for ${this.config.getModel()}. ` +
+            `IMPORTANT: This conversation ${reasonClause}. ` +
             `A compressed context will be sent for future messages (compressed from: ` +
             `${compressed.originalTokenCount ?? 'unknown'} to ` +
             `${compressed.newTokenCount ?? 'unknown'} tokens).`;
@@ -2147,6 +2180,15 @@ export class Session implements SessionContext {
           decision,
           this.config,
           denialState,
+        );
+        await fireSessionPermissionDeniedForAutoMode(
+          this.config,
+          decision,
+          outcome,
+          fc.name,
+          toolParams,
+          callId,
+          abortSignal,
         );
         switch (outcome.kind) {
           case 'approved':
