@@ -600,7 +600,7 @@ describe('Session', () => {
       expect(mockChat.truncateHistory).not.toHaveBeenCalled();
     });
 
-    it('rejects ACP rewind to the first turn after compression absorbed it', () => {
+    it('allows ACP rewind to the beginning after compression absorbed the first turn', () => {
       setSessionTurnCounters(session, {
         turn: 3,
         modelFacingUserTurnCount: 3,
@@ -615,10 +615,11 @@ describe('Session', () => {
         { role: 'model', parts: [{ text: 'third reply' }] },
       ]);
 
-      expect(() => session.rewindToTurn(0)).toThrow(
-        'Cannot rewind to the requested turn',
-      );
-      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+      expect(session.rewindToTurn(0)).toEqual({
+        targetTurnIndex: 0,
+        apiTruncateIndex: 0,
+      });
+      expect(mockChat.truncateHistory).toHaveBeenCalledWith(0);
     });
 
     it('does not treat the compression bridge as an ACP rewind target', () => {
@@ -757,6 +758,25 @@ describe('Session', () => {
         'Cannot rewind to the requested turn',
       );
       expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+    });
+
+    it('validates history snapshots before mutating chat history', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 2 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'first' }] },
+        { role: 'model', parts: [{ text: 'first reply' }] },
+      ];
+
+      expect(() =>
+        session.restoreHistory({
+          history,
+          modelFacingUserTurnCount: -1,
+        }),
+      ).toThrow(
+        'modelFacingUserTurnCount must be a non-negative finite integer',
+      );
+      expect(mockChat.setHistory).not.toHaveBeenCalled();
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
     });
 
     it('derives model-facing turn count when restoring legacy history arrays', () => {

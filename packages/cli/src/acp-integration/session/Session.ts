@@ -516,10 +516,11 @@ export class Session implements SessionContext {
         'Cannot restore an empty history snapshot',
       );
     }
-    this.config.getGeminiClient()!.getChat().setHistory(history);
-    this.modelFacingUserTurnCount = Array.isArray(snapshot)
+    const newModelFacingUserTurnCount = Array.isArray(snapshot)
       ? computeVisibleModelFacingUserTurnCount(history)
       : validateModelFacingUserTurnCount(snapshot.modelFacingUserTurnCount);
+    this.config.getGeminiClient()!.getChat().setHistory(history);
+    this.modelFacingUserTurnCount = newModelFacingUserTurnCount;
   }
 
   #computeApiTruncationIndexForUserTurn(
@@ -527,6 +528,10 @@ export class Session implements SessionContext {
     targetTurnIndex: number,
   ): number {
     const startIndex = hasStartupContext(apiHistory) ? 2 : 0;
+
+    if (targetTurnIndex === 0) {
+      return startIndex;
+    }
 
     if (hasCompressionSummaryPair(apiHistory, startIndex)) {
       const apiTailUserIndices = getApiUserTextIndices(
@@ -558,10 +563,6 @@ export class Session implements SessionContext {
       // should always prevent out-of-bounds access here, so ?? -1 is
       // unreachable in normal operation.
       return apiTailUserIndices[targetTurnIndex - compressedTurnCount] ?? -1;
-    }
-
-    if (targetTurnIndex === 0) {
-      return startIndex;
     }
 
     return (
