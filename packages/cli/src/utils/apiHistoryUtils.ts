@@ -9,7 +9,8 @@ import {
   COMPRESSION_CONTINUATION_BRIDGE_MARKER,
   COMPRESSION_SUMMARY_MODEL_ACK,
   STARTUP_CONTEXT_MODEL_ACK,
- createDebugLogger } from '@qwen-code/qwen-code-core';
+  createDebugLogger,
+} from '@qwen-code/qwen-code-core';
 
 const debugLogger = createDebugLogger('API_HISTORY_UTILS');
 
