@@ -302,7 +302,7 @@ describe('computeApiTruncationIndex', () => {
       expect(computeApiTruncationIndex(ui, 5, api)).toBe(4);
     });
 
-    it('does not skip a real user prompt with the visible bridge text', () => {
+    it('skips the legacy visible bridge text without the sentinel', () => {
       const visibleBridgeText =
         'Continue with the prior task using the context above.';
       const ui: HistoryItem[] = [
@@ -324,7 +324,7 @@ describe('computeApiTruncationIndex', () => {
         modelContent('response 7'),
       ];
 
-      expect(computeApiTruncationIndex(ui, 5, api)).toBe(2);
+      expect(computeApiTruncationIndex(ui, 5, api)).toBe(-1);
       expect(computeApiTruncationIndex(ui, 7, api)).toBe(4);
     });
 

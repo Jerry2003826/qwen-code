@@ -474,6 +474,7 @@ describe('Session', () => {
 
       expect(result).toEqual({ targetTurnIndex: 2, apiTruncateIndex: 2 });
       expect(mockChat.truncateHistory).toHaveBeenCalledWith(2);
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
     });
 
     it('keeps compressed tail reachable after rewind and resend', async () => {
@@ -727,6 +728,8 @@ describe('Session', () => {
         modelFacingUserTurnCount: 1,
       });
       expect(mockChat.setHistory).toHaveBeenCalledWith(history);
+      const restoredHistory = vi.mocked(mockChat.setHistory).mock.calls[0]![0];
+      expect(restoredHistory).not.toBe(snapshot.history);
       expect(mockChat.getHistory).not.toHaveBeenCalled();
     });
 
@@ -767,6 +770,7 @@ describe('Session', () => {
       });
 
       session.restoreHistory(snapshot);
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(4);
       vi.mocked(mockChat.getHistory).mockReturnValue(history);
       vi.mocked(mockChat.truncateHistory).mockClear();
 
@@ -791,6 +795,46 @@ describe('Session', () => {
       ).toThrow(
         'modelFacingUserTurnCount must be a non-negative finite integer',
       );
+      expect(mockChat.setHistory).not.toHaveBeenCalled();
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
+    it('rejects history snapshots whose counter exceeds non-compressed user entries', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 2 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'first' }] },
+        { role: 'model', parts: [{ text: 'first reply' }] },
+      ];
+
+      expect(() =>
+        session.restoreHistory({
+          history,
+          modelFacingUserTurnCount: 2,
+        }),
+      ).toThrow('exceeds visible model-facing user entries');
+      expect(mockChat.setHistory).not.toHaveBeenCalled();
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
+    it('rejects compressed history snapshots whose counter is lower than the visible tail', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 2 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'summary of earlier turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+        { role: 'user', parts: [{ text: 'fourth' }] },
+      ];
+
+      expect(() =>
+        session.restoreHistory({
+          history,
+          modelFacingUserTurnCount: 1,
+        }),
+      ).toThrow('is less than visible model-facing user entries');
       expect(mockChat.setHistory).not.toHaveBeenCalled();
       expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
     });
@@ -865,6 +909,16 @@ describe('Session', () => {
       expect(() => session.restoreHistory([])).toThrow(
         'Cannot restore history while a prompt is running',
       );
+      expect(mockChat.setHistory).not.toHaveBeenCalled();
+    });
+
+    it('rejects empty history snapshots without mutating chat history', () => {
+      expect(() =>
+        session.restoreHistory({
+          history: [],
+          modelFacingUserTurnCount: 0,
+        }),
+      ).toThrow('Cannot restore an empty history snapshot');
       expect(mockChat.setHistory).not.toHaveBeenCalled();
     });
 
@@ -1761,6 +1815,51 @@ describe('Session', () => {
             },
           },
         });
+      });
+
+      it('rolls back model-facing turn count when a non-compressed send is stopped before streaming', async () => {
+        mockConfig.getSessionTokenLimit = vi.fn().mockReturnValue(100);
+        mockGeminiClient.tryCompressChat.mockResolvedValueOnce({
+          originalTokenCount: 101,
+          newTokenCount: 101,
+          compressionStatus: core.CompressionStatus.NOOP,
+        });
+        mockChat.sendMessageStream = vi
+          .fn()
+          .mockResolvedValue(createEmptyStream());
+
+        await expect(
+          session.prompt({
+            sessionId: 'test-session-id',
+            prompt: [{ type: 'text', text: 'hello' }],
+          }),
+        ).resolves.toEqual({ stopReason: 'max_tokens' });
+
+        expect(mockChat.sendMessageStream).not.toHaveBeenCalled();
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(0);
+      });
+
+      it('keeps model-facing turn count when a compressed stream throws after compression', async () => {
+        mockGeminiClient.tryCompressChat.mockResolvedValueOnce({
+          originalTokenCount: 1200,
+          newTokenCount: 450,
+          compressionStatus: core.CompressionStatus.COMPRESSED,
+        });
+        mockChat.sendMessageStream = vi.fn().mockResolvedValue(
+          (async function* () {
+            yield { type: core.StreamEventType.CHUNK, value: {} };
+            throw new Error('stream failed');
+          })(),
+        );
+
+        await expect(
+          session.prompt({
+            sessionId: 'test-session-id',
+            prompt: [{ type: 'text', text: 'hello' }],
+          }),
+        ).rejects.toThrow('stream failed');
+
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
       });
 
       it('stops without throwing when the token-limit diagnostic fails', async () => {

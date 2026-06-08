@@ -182,6 +182,38 @@ function validateModelFacingUserTurnCount(count: unknown): number {
   return count;
 }
 
+function validateModelFacingUserTurnCountForHistory(
+  history: Content[],
+  count: unknown,
+): number {
+  const validatedCount = validateModelFacingUserTurnCount(count);
+  const startIndex = hasStartupContext(history) ? 2 : 0;
+
+  if (hasCompressionSummaryPair(history, startIndex)) {
+    const visibleTailTurnCount = getApiUserTextIndices(
+      history,
+      startIndex + 2,
+      true,
+    ).length;
+    if (validatedCount < visibleTailTurnCount) {
+      throw RequestError.invalidParams(
+        undefined,
+        `modelFacingUserTurnCount ${validatedCount} is less than visible model-facing user entries ${visibleTailTurnCount}`,
+      );
+    }
+    return validatedCount;
+  }
+
+  const visibleTurnCount = computeVisibleModelFacingUserTurnCount(history);
+  if (validatedCount > visibleTurnCount) {
+    throw RequestError.invalidParams(
+      undefined,
+      `modelFacingUserTurnCount ${validatedCount} exceeds visible model-facing user entries ${visibleTurnCount}`,
+    );
+  }
+  return validatedCount;
+}
+
 export function computeInitialTurnFromHistory(
   records: ChatRecord[],
   sessionId: string,
@@ -550,8 +582,14 @@ export class Session implements SessionContext {
     }
     const newModelFacingUserTurnCount = Array.isArray(snapshot)
       ? computeVisibleModelFacingUserTurnCount(history)
-      : validateModelFacingUserTurnCount(snapshot.modelFacingUserTurnCount);
-    this.config.getGeminiClient()!.getChat().setHistory(history);
+      : validateModelFacingUserTurnCountForHistory(
+          history,
+          snapshot.modelFacingUserTurnCount,
+        );
+    this.config
+      .getGeminiClient()!
+      .getChat()
+      .setHistory(structuredClone(history));
     this.modelFacingUserTurnCount = newModelFacingUserTurnCount;
   }
 
@@ -574,27 +612,37 @@ export class Session implements SessionContext {
       if (this.modelFacingUserTurnCount < targetTurnIndex + 1) {
         debugLogger.warn(
           `Cannot rewind to user turn ${targetTurnIndex}; ` +
-            `model-facing user turn count is ${this.modelFacingUserTurnCount}.`,
+            `modelFacingUserTurnCount=${this.modelFacingUserTurnCount}, ` +
+            `apiHistoryLength=${apiHistory.length}, startIndex=${startIndex}.`,
         );
         return -1;
       }
       const totalUserTurns = this.modelFacingUserTurnCount;
+      if (totalUserTurns < apiTailUserIndices.length) {
+        debugLogger.warn(
+          `Inconsistent compressed rewind state for turn ${targetTurnIndex}: ` +
+            `modelFacingUserTurnCount=${totalUserTurns}, ` +
+            `apiTailUserIndices.length=${apiTailUserIndices.length}, ` +
+            `apiHistoryLength=${apiHistory.length}, startIndex=${startIndex}.`,
+        );
+      }
       const compressedTurnCount = Math.max(
         0,
         totalUserTurns - apiTailUserIndices.length,
       );
 
       if (targetTurnIndex < compressedTurnCount) {
-        debugLogger.info(
-          `Rewind to turn ${targetTurnIndex} rejected: compressed ${compressedTurnCount} of ${totalUserTurns} total turns, tail has ${apiTailUserIndices.length} entries`,
+        debugLogger.warn(
+          `Rewind to turn ${targetTurnIndex} rejected after compression: ` +
+            `compressedTurnCount=${compressedTurnCount}, ` +
+            `modelFacingUserTurnCount=${totalUserTurns}, ` +
+            `apiTailUserIndices.length=${apiTailUserIndices.length}, ` +
+            `apiHistoryLength=${apiHistory.length}, startIndex=${startIndex}.`,
         );
         return -1;
       }
 
-      // Defensive: the guard above (targetTurnIndex < compressedTurnCount)
-      // should always prevent out-of-bounds access here, so ?? -1 is
-      // unreachable in normal operation.
-      return apiTailUserIndices[targetTurnIndex - compressedTurnCount] ?? -1;
+      return apiTailUserIndices[targetTurnIndex - compressedTurnCount]!;
     }
 
     return (
@@ -841,6 +889,7 @@ export class Session implements SessionContext {
           let usageMetadata: GenerateContentResponseUsageMetadata | null = null;
           const streamStartTime = Date.now();
           let recordedModelFacingTurn = false;
+          let sendHistoryCompressed = false;
 
           try {
             recordedModelFacingTurn =
@@ -850,6 +899,7 @@ export class Session implements SessionContext {
               nextMessage?.parts ?? [],
               pendingSend.signal,
             );
+            sendHistoryCompressed = !!sendResult.historyCompressed;
             if (!sendResult.responseStream) {
               if (
                 sendResult.stopReason !== 'cancelled' &&
@@ -906,7 +956,9 @@ export class Session implements SessionContext {
             }
           } catch (error) {
             // Rollback model-facing turn count to prevent counter drift on exceptions
-            this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+            if (!sendHistoryCompressed) {
+              this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+            }
 
             // Fire StopFailure hook (fire-and-forget, replaces Stop event for API errors)
             // Aligned with useGeminiStream.ts handleFinishedWithErrorEvent
@@ -1106,6 +1158,7 @@ export class Session implements SessionContext {
           let usageMetadata: GenerateContentResponseUsageMetadata | null = null;
           const streamStartTime = Date.now();
           let recordedModelFacingTurn = false;
+          let sendHistoryCompressed = false;
 
           try {
             recordedModelFacingTurn =
@@ -1117,6 +1170,7 @@ export class Session implements SessionContext {
                 pendingSend.signal,
                 { skipCompression: stopHookIterationCount > 1 },
               );
+            sendHistoryCompressed = !!continueSendResult.historyCompressed;
             if (!continueSendResult.responseStream) {
               if (
                 continueSendResult.stopReason !== 'cancelled' &&
@@ -1170,7 +1224,9 @@ export class Session implements SessionContext {
             }
           } catch (error) {
             // Rollback model-facing turn count to prevent counter drift on exceptions
-            this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+            if (!sendHistoryCompressed) {
+              this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+            }
 
             // Fire StopFailure hook (fire-and-forget)
             const errorStatus = getErrorStatus(error);
@@ -1582,6 +1638,7 @@ export class Session implements SessionContext {
           this.config.getSessionId() + '########cron' + Date.now();
 
         let recordedModelFacingTurn = false;
+        let sendHistoryCompressed = false;
 
         try {
           // Echo the cron prompt as a user message so the client sees it
@@ -1602,6 +1659,8 @@ export class Session implements SessionContext {
           while (nextMessage !== null) {
             if (ac.signal.aborted) return;
 
+            recordedModelFacingTurn = false;
+            sendHistoryCompressed = false;
             const functionCalls: FunctionCall[] = [];
             let usageMetadata: GenerateContentResponseUsageMetadata | null =
               null;
@@ -1614,6 +1673,7 @@ export class Session implements SessionContext {
               nextMessage.parts ?? [],
               ac.signal,
             );
+            sendHistoryCompressed = !!sendResult.historyCompressed;
             if (!sendResult.responseStream) {
               if (
                 sendResult.stopReason !== 'cancelled' &&
@@ -1692,7 +1752,9 @@ export class Session implements SessionContext {
           }
         } catch (error) {
           // Rollback model-facing turn count to prevent counter drift on exceptions
-          this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+          if (!sendHistoryCompressed) {
+            this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+          }
 
           if (ac.signal.aborted) return;
           debugLogger.error('Error processing cron prompt:', error);

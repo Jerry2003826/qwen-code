@@ -1998,6 +1998,40 @@ describe('QwenAgent MCP SSE/HTTP support', () => {
     await agentPromise;
   });
 
+  it('restoreSessionHistory rejects empty history snapshots', async () => {
+    const sessionId = '11111111-1111-1111-1111-111111111111';
+    await setupSessionMocks(sessionId);
+
+    const agentPromise = runAcpAgent(
+      mockConfig,
+      makeSessionSettings(),
+      mockArgv,
+    );
+    await vi.waitFor(() => expect(capturedAgentFactory).toBeDefined());
+
+    const agent = capturedAgentFactory!({
+      get closed() {
+        return mockConnectionState.promise;
+      },
+    }) as AgentLike;
+
+    await agent.newSession({ cwd: '/tmp', mcpServers: [] });
+
+    await expect(
+      agent.extMethod('restoreSessionHistory', {
+        sessionId,
+        history: {
+          history: [],
+          modelFacingUserTurnCount: 0,
+        },
+      }),
+    ).rejects.toThrow('Invalid or missing history');
+    expect(lastSessionMock?.restoreHistory).not.toHaveBeenCalled();
+
+    mockConnectionState.resolve();
+    await agentPromise;
+  });
+
   it('restoreSessionHistory rejects invalid session ids', async () => {
     await setupSessionMocks('11111111-1111-1111-1111-111111111111');
 

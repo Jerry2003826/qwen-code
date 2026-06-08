@@ -13,12 +13,14 @@ import {
 } from '@qwen-code/qwen-code-core';
 
 const debugLogger = createDebugLogger('API_HISTORY_UTILS');
+const LEGACY_COMPRESSION_CONTINUATION_BRIDGE_PROMPT =
+  'Continue with the prior task using the context above.';
 
 /**
  * Checks whether a Content entry is the synthetic continuation bridge
- * inserted after compression. Detection uses the invisible sentinel
- * marker prefix rather than matching on the full string, so a real user
- * prompt with the same visible text is not mistaken for the bridge.
+ * inserted after compression. New histories use an invisible sentinel marker;
+ * the exact visible prompt is kept as a legacy fallback for sessions
+ * compressed before the marker was added.
  */
 export function isCompressionContinuationBridge(
   content: Content | undefined,
@@ -29,7 +31,8 @@ export function isCompressionContinuationBridge(
       (part) =>
         'text' in part &&
         typeof part.text === 'string' &&
-        part.text.startsWith(COMPRESSION_CONTINUATION_BRIDGE_MARKER),
+        (part.text.startsWith(COMPRESSION_CONTINUATION_BRIDGE_MARKER) ||
+          part.text === LEGACY_COMPRESSION_CONTINUATION_BRIDGE_PROMPT),
     ) ?? false
   );
 }

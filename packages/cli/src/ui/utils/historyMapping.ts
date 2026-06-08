@@ -119,10 +119,7 @@ export function computeApiTruncationIndex(
       return -1;
     }
 
-    // Defensive: the guard above (targetOrdinal <= compressedTurnCount)
-    // should always prevent out-of-bounds access here, so ?? -1 is
-    // unreachable in normal operation.
-    return apiTailUserIndices[targetOrdinal - compressedTurnCount - 1] ?? -1;
+    return apiTailUserIndices[targetOrdinal - compressedTurnCount - 1]!;
   }
 
   if (targetOrdinal === 1) {

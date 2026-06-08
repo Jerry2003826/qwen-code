@@ -233,7 +233,7 @@ describe('getApiUserTextIndices', () => {
       expect(indices).toEqual([0, 2, 4]);
     });
 
-    it('does not skip user prompts with same visible text but no sentinel', () => {
+    it('skips the legacy visible bridge text without the sentinel', () => {
       const visibleText =
         'Continue with the prior task using the context above.';
       const history: Content[] = [
@@ -243,8 +243,7 @@ describe('getApiUserTextIndices', () => {
         userTextContent('tail turn'),
       ];
       const indices = getApiUserTextIndices(history, 0, true);
-      // The visible text without sentinel is treated as a real user turn
-      expect(indices).toEqual([0, 2, 3]);
+      expect(indices).toEqual([0, 3]);
     });
   });
 });
@@ -297,13 +296,13 @@ describe('isCompressionContinuationBridge', () => {
     expect(isCompressionContinuationBridge(bridge)).toBe(true);
   });
 
-  it('returns false for a real user prompt with identical visible text', () => {
+  it('detects legacy bridge content by exact visible text', () => {
     const visibleText = 'Continue with the prior task using the context above.';
-    const userPrompt: Content = {
+    const legacyBridge: Content = {
       role: 'user',
       parts: [{ text: visibleText } as Part],
     };
-    expect(isCompressionContinuationBridge(userPrompt)).toBe(false);
+    expect(isCompressionContinuationBridge(legacyBridge)).toBe(true);
   });
 
   it('returns false for model role content', () => {
