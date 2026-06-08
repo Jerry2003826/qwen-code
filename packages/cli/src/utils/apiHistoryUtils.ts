@@ -8,8 +8,9 @@ import type { Content } from '@google/genai';
 import {
   COMPRESSION_CONTINUATION_BRIDGE_MARKER,
   COMPRESSION_SUMMARY_MODEL_ACK,
-  STARTUP_CONTEXT_MODEL_ACK,
   createDebugLogger,
+  getStartupContextLength,
+  isSystemReminderContent,
 } from '@qwen-code/qwen-code-core';
 
 const debugLogger = createDebugLogger('API_HISTORY_UTILS');
@@ -66,6 +67,7 @@ export function isApiUserTextContent(content: Content): boolean {
     (part) => 'functionResponse' in part,
   );
   if (hasFunctionResponse) return false;
+  if (isSystemReminderContent(content)) return false;
 
   return content.parts.some((part) => 'text' in part && part.text);
 }
@@ -107,9 +109,5 @@ export function getApiUserTextIndices(
  * (user env context + model acknowledgment).
  */
 export function hasStartupContext(apiHistory: Content[]): boolean {
-  if (apiHistory.length < 2) return false;
-  const first = apiHistory[0];
-  const second = apiHistory[1];
-  if (first?.role !== 'user' || second?.role !== 'model') return false;
-  return hasTextPart(second, STARTUP_CONTEXT_MODEL_ACK);
+  return getStartupContextLength(apiHistory) > 0;
 }

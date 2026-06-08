@@ -6,12 +6,15 @@
 
 import type { HistoryItem, HistoryItemUser } from '../types.js';
 import type { Content } from '@google/genai';
-import { createDebugLogger } from '@qwen-code/qwen-code-core';
+import {
+  createDebugLogger,
+  getStartupContextLength,
+  isSystemReminderContent,
+} from '@qwen-code/qwen-code-core';
 import { isSlashCommand } from './commandUtils.js';
 import {
-  getApiUserTextIndices,
   hasCompressionSummaryPair,
-  hasStartupContext,
+  isCompressionContinuationBridge,
 } from '../../utils/apiHistoryUtils.js';
 
 const debugLogger = createDebugLogger('HISTORY_MAPPING');
@@ -19,11 +22,11 @@ const debugLogger = createDebugLogger('HISTORY_MAPPING');
 /**
  * Returns true when the history item represents a real user prompt that was
  * sent to the model, as opposed to a slash-command invocation (`/help`,
- * `/stats`, …) which is stored with `type: 'user'` in the UI but never
+ * `/stats`, ...) which is stored with `type: 'user'` in the UI but never
  * reaches the API history or `turnParentUuids`.
  *
  * Typed as a type predicate so callers can drop their `as HistoryItemUser`
- * casts — a regression that loosened either side of the narrowing would now
+ * casts - a regression that loosened either side of the narrowing would now
  * be caught by tsc instead of silently bypassing it.
  */
 export function isRealUserTurn(
@@ -36,6 +39,50 @@ export function isRealUserTurn(
   // Changes to slash-command classification must account for old sessions that
   // still rely on this inference.
   return !isSlashCommand(item.text) && !item.text.startsWith('?');
+}
+
+/**
+ * Checks if a Content entry is a user-initiated text prompt
+ * as opposed to a tool result (functionResponse).
+ */
+function isUserTextContent(content: Content): boolean {
+  if (content.role !== 'user') return false;
+  if (!content.parts || content.parts.length === 0) return false;
+
+  const hasFunctionResponse = content.parts.some(
+    (part) => 'functionResponse' in part,
+  );
+  if (hasFunctionResponse) return false;
+
+  // Exclude pure <system-reminder> entries (the startup prelude and the
+  // mid-history MCP added-tool reminders). They are structural, not real user
+  // prompts; counting them here would shift the rewind truncation index and
+  // silently drop a real turn's context. A genuine user turn that merely has
+  // a per-turn reminder prepended still has a non-reminder prompt part, so it
+  // is NOT excluded.
+  if (isSystemReminderContent(content)) return false;
+
+  return content.parts.some((part) => 'text' in part && part.text);
+}
+
+function getRewindApiUserTextIndices(
+  apiHistory: Content[],
+  startIndex: number,
+  skipContinuationBridge: boolean,
+): number[] {
+  const indices: number[] = [];
+
+  for (let i = startIndex; i < apiHistory.length; i++) {
+    const content = apiHistory[i]!;
+    if (!isUserTextContent(content)) continue;
+    if (skipContinuationBridge && isCompressionContinuationBridge(content)) {
+      debugLogger.debug('Skipping compression continuation bridge at index', i);
+      continue;
+    }
+    indices.push(i);
+  }
+
+  return indices;
 }
 
 function getUiTurnOrdinals(
@@ -62,13 +109,13 @@ function getUiTurnOrdinals(
  * to a specific user turn in the UI history.
  *
  * The API history may include:
- * - A startup context pair: [user(env), model(ack)] at the beginning
+ * - A startup context entry or startup context pair at the beginning
  * - User text prompts (corresponding to UI user turns)
  * - Model responses (with optional functionCall parts)
  * - Tool result entries: user(functionResponse) + model(response)
  *
  * This function counts user text Content entries (skipping tool results
- * and the startup context pair) to find the API boundary corresponding
+ * and the startup context) to find the API boundary corresponding
  * to the target UI user turn.
  *
  * Note: In IDE mode, additional user Content entries may be injected for
@@ -94,15 +141,14 @@ export function computeApiTruncationIndex(
 
   if (targetOrdinal < 0) return -1;
 
-  // Determine the starting index in the API history (skip startup context)
-  const startIndex = hasStartupContext(apiHistory) ? 2 : 0;
+  const startIndex = getStartupContextLength(apiHistory);
 
   if (hasCompressionSummaryPair(apiHistory, startIndex)) {
     // Compression replaces the oldest N UI turns with one synthetic
     // summary user entry plus a fixed model acknowledgment. The remaining
     // API user-text entries are the uncompressed tail, so align that tail
     // against the end of the UI turn list instead of counting from the front.
-    const apiTailUserIndices = getApiUserTextIndices(
+    const apiTailUserIndices = getRewindApiUserTextIndices(
       apiHistory,
       startIndex + 2,
       true,
@@ -127,9 +173,7 @@ export function computeApiTruncationIndex(
     return startIndex;
   }
 
-  // Walk the API history from after the startup context, counting
-  // user text prompts to find the one corresponding to the target turn.
-  const apiUserTextIndices = getApiUserTextIndices(
+  const apiUserTextIndices = getRewindApiUserTextIndices(
     apiHistory,
     startIndex,
     false,
@@ -137,7 +181,5 @@ export function computeApiTruncationIndex(
   const targetApiIndex = apiUserTextIndices[targetOrdinal - 1];
   if (targetApiIndex !== undefined) return targetApiIndex;
 
-  // If we didn't find enough user prompts (e.g., after compression),
-  // signal that the target turn is unreachable.
   return -1;
 }

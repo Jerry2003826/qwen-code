@@ -10,7 +10,8 @@ import {
   COMPRESSION_CONTINUATION_BRIDGE,
   COMPRESSION_CONTINUATION_BRIDGE_MARKER,
   COMPRESSION_SUMMARY_MODEL_ACK,
-  STARTUP_CONTEXT_MODEL_ACK,
+  SYSTEM_REMINDER_CLOSE,
+  SYSTEM_REMINDER_OPEN,
 } from '@qwen-code/qwen-code-core';
 import {
   hasTextPart,
@@ -21,6 +22,8 @@ import {
   hasStartupContext,
   isCompressionContinuationBridge,
 } from './apiHistoryUtils.js';
+
+const STARTUP_CONTEXT_MODEL_ACK = 'Got it. Thanks for the context!';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -119,6 +122,14 @@ describe('isApiUserTextContent', () => {
 
   it('returns false for functionCall content (model role)', () => {
     expect(isApiUserTextContent(functionCallContent())).toBe(false);
+  });
+
+  it('returns false for pure system reminder content', () => {
+    const content = userTextContent(
+      `${SYSTEM_REMINDER_OPEN}\nNew tools available: foo\n${SYSTEM_REMINDER_CLOSE}`,
+    );
+
+    expect(isApiUserTextContent(content)).toBe(false);
   });
 
   it('rejects user content with no text (only functionResponse)', () => {
