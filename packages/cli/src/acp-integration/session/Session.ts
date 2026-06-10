@@ -188,6 +188,7 @@ function validateModelFacingUserTurnCount(count: unknown): number {
 function validateModelFacingUserTurnCountForHistory(
   history: Content[],
   count: unknown,
+  maxKnownModelFacingUserTurnCount: number,
 ): number {
   const validatedCount = validateModelFacingUserTurnCount(count);
   const startIndex = getStartupContextLength(history);
@@ -202,6 +203,12 @@ function validateModelFacingUserTurnCountForHistory(
       throw RequestError.invalidParams(
         undefined,
         `modelFacingUserTurnCount ${validatedCount} is less than visible model-facing user entries ${visibleTailTurnCount}`,
+      );
+    }
+    if (validatedCount > maxKnownModelFacingUserTurnCount) {
+      throw RequestError.invalidParams(
+        undefined,
+        `modelFacingUserTurnCount ${validatedCount} exceeds known model-facing user entries ${maxKnownModelFacingUserTurnCount}`,
       );
     }
     return validatedCount;
@@ -481,6 +488,7 @@ export class Session implements SessionContext {
   private pendingPromptCompletion: Promise<void> | null = null;
   private turn: number = 0;
   private modelFacingUserTurnCount: number = 0;
+  private maxModelFacingUserTurnCount: number = 0;
   private readonly runtimeBaseDir: string;
 
   // Cron scheduling state
@@ -613,6 +621,10 @@ export class Session implements SessionContext {
         this.config.getSessionId(),
       ),
     );
+    this.maxModelFacingUserTurnCount = Math.max(
+      this.maxModelFacingUserTurnCount,
+      this.modelFacingUserTurnCount,
+    );
     await this.historyReplayer.replay(records);
   }
 
@@ -669,9 +681,7 @@ export class Session implements SessionContext {
 
   captureHistorySnapshot(): HistorySnapshot {
     return {
-      history: structuredClone(
-        this.config.getGeminiClient()!.getChat().getHistoryShallow(),
-      ),
+      history: this.config.getGeminiClient()!.getChat().getHistoryShallow(),
       modelFacingUserTurnCount: this.modelFacingUserTurnCount,
     };
   }
@@ -702,12 +712,17 @@ export class Session implements SessionContext {
       : validateModelFacingUserTurnCountForHistory(
           history,
           snapshot.modelFacingUserTurnCount,
+          this.maxModelFacingUserTurnCount,
         );
     this.config
       .getGeminiClient()!
       .getChat()
       .setHistory(structuredClone(history));
     this.modelFacingUserTurnCount = newModelFacingUserTurnCount;
+    this.maxModelFacingUserTurnCount = Math.max(
+      this.maxModelFacingUserTurnCount,
+      newModelFacingUserTurnCount,
+    );
   }
 
   #computeApiTruncationIndexForUserTurn(
@@ -759,7 +774,18 @@ export class Session implements SessionContext {
         return -1;
       }
 
-      return apiTailUserIndices[targetTurnIndex - compressedTurnCount]!;
+      const tailOffset = targetTurnIndex - compressedTurnCount;
+      if (tailOffset < 0 || tailOffset >= apiTailUserIndices.length) {
+        debugLogger.warn(
+          `Compressed rewind index out of bounds: targetTurnIndex=${targetTurnIndex}, ` +
+            `compressedTurnCount=${compressedTurnCount}, ` +
+            `apiTailUserIndices.length=${apiTailUserIndices.length}, ` +
+            `apiHistoryLength=${apiHistory.length}, startIndex=${startIndex}.`,
+        );
+        return -1;
+      }
+
+      return apiTailUserIndices[tailOffset]!;
     }
 
     return (
@@ -1466,6 +1492,10 @@ export class Session implements SessionContext {
   #recordModelFacingUserTurn(message: Content): boolean {
     if (isApiUserTextContent(message)) {
       this.modelFacingUserTurnCount += 1;
+      this.maxModelFacingUserTurnCount = Math.max(
+        this.maxModelFacingUserTurnCount,
+        this.modelFacingUserTurnCount,
+      );
       return true;
     }
     return false;

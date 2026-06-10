@@ -254,9 +254,23 @@ function expectCompressBeforeSend(
 
 function setSessionTurnCounters(
   targetSession: Session,
-  counters: { turn?: number; modelFacingUserTurnCount?: number },
+  counters: {
+    turn?: number;
+    modelFacingUserTurnCount?: number;
+    maxModelFacingUserTurnCount?: number;
+  },
 ) {
-  Object.assign(targetSession as unknown as Record<string, number>, counters);
+  const sessionCounters = targetSession as unknown as Record<string, number>;
+  Object.assign(sessionCounters, counters);
+  if (
+    counters.modelFacingUserTurnCount !== undefined &&
+    counters.maxModelFacingUserTurnCount === undefined
+  ) {
+    sessionCounters['maxModelFacingUserTurnCount'] = Math.max(
+      sessionCounters['maxModelFacingUserTurnCount'] ?? 0,
+      counters.modelFacingUserTurnCount,
+    );
+  }
 }
 
 function getSessionModelFacingUserTurnCount(targetSession: Session): number {
@@ -833,16 +847,16 @@ describe('Session', () => {
       expect(mockChat.getHistory).not.toHaveBeenCalled();
     });
 
-    it('returns an isolated history snapshot from the chat history clone', () => {
-      const history: Content[] = [{ role: 'user', parts: [{ text: 'first' }] }];
-      vi.mocked(mockChat.getHistory).mockImplementation(() =>
-        structuredClone(history),
-      );
+    it('captures the chat shallow history copy without deep-cloning payloads', () => {
+      const inlineData = { data: 'large-image', mimeType: 'image/png' };
+      const history: Content[] = [{ role: 'user', parts: [{ inlineData }] }];
+      vi.mocked(mockChat.getHistoryShallow).mockReturnValue(history);
 
       const snapshot = session.captureHistorySnapshot();
-      (snapshot.history[0]!.parts![0] as { text: string }).text = 'mutated';
 
-      expect(history[0]!.parts![0]).toEqual({ text: 'first' });
+      expect(snapshot.history).toBe(history);
+      expect(snapshot.history[0]!.parts![0]).toBe(history[0]!.parts![0]);
+      expect(mockChat.getHistory).not.toHaveBeenCalled();
     });
 
     it('restores model-facing turn count with the history snapshot', () => {
@@ -935,6 +949,32 @@ describe('Session', () => {
           modelFacingUserTurnCount: 1,
         }),
       ).toThrow('is less than visible model-facing user entries');
+      expect(mockChat.setHistory).not.toHaveBeenCalled();
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
+    it('rejects compressed history snapshots whose counter exceeds the known model-facing count', () => {
+      setSessionTurnCounters(session, {
+        modelFacingUserTurnCount: 2,
+        maxModelFacingUserTurnCount: 4,
+      });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+        { role: 'user', parts: [{ text: 'fourth' }] },
+      ];
+
+      expect(() =>
+        session.restoreHistory({
+          history,
+          modelFacingUserTurnCount: 5,
+        }),
+      ).toThrow('exceeds known model-facing user entries');
       expect(mockChat.setHistory).not.toHaveBeenCalled();
       expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
     });

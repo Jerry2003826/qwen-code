@@ -34,6 +34,10 @@ vi.mock('node:fs', () => ({
   mkdirSync: vi.fn(),
 }));
 
+function normalizePath(value) {
+  return String(value).replaceAll('\\', '/');
+}
+
 describe('scripts/dev.js launcher', () => {
   const originalArgv = process.argv;
   const execPathDescriptor = Object.getOwnPropertyDescriptor(
@@ -57,7 +61,7 @@ describe('scripts/dev.js launcher', () => {
   it('spawns Node without a shell on Windows when local tsx cli.mjs exists', async () => {
     platformMock.mockReturnValue('win32');
     existsSyncMock.mockImplementation((filePath) =>
-      String(filePath).endsWith('node_modules/tsx/dist/cli.mjs'),
+      normalizePath(filePath).endsWith('node_modules/tsx/dist/cli.mjs'),
     );
     Object.defineProperty(process, 'execPath', {
       configurable: true,
@@ -67,29 +71,25 @@ describe('scripts/dev.js launcher', () => {
 
     await import('../dev.js?direct-node');
 
-    expect(spawnMock).toHaveBeenCalledWith(
-      'C:\\Program Files\\nodejs\\node.exe',
-      [
-        expect.stringContaining('node_modules/tsx/dist/cli.mjs'),
-        expect.stringContaining('packages/cli/index.ts'),
-        '--help',
-      ],
-      expect.objectContaining({ shell: false }),
-    );
+    const [command, args, options] = spawnMock.mock.calls[0];
+    expect(command).toBe('C:\\Program Files\\nodejs\\node.exe');
+    expect(normalizePath(args[0])).toContain('node_modules/tsx/dist/cli.mjs');
+    expect(normalizePath(args[1])).toContain('packages/cli/index.ts');
+    expect(args[2]).toBe('--help');
+    expect(options).toEqual(expect.objectContaining({ shell: false }));
   });
 
   it('keeps shell fallback for Windows tsx.cmd resolution', async () => {
     platformMock.mockReturnValue('win32');
     existsSyncMock.mockImplementation((filePath) =>
-      String(filePath).endsWith('node_modules/.bin/tsx.cmd'),
+      normalizePath(filePath).endsWith('node_modules/.bin/tsx.cmd'),
     );
 
     await import('../dev.js?cmd-fallback');
 
-    expect(spawnMock).toHaveBeenCalledWith(
-      expect.stringContaining('tsx.cmd'),
-      [expect.stringContaining('packages/cli/index.ts')],
-      expect.objectContaining({ shell: true }),
-    );
+    const [command, args, options] = spawnMock.mock.calls[0];
+    expect(normalizePath(command)).toContain('tsx.cmd');
+    expect(normalizePath(args[0])).toContain('packages/cli/index.ts');
+    expect(options).toEqual(expect.objectContaining({ shell: true }));
   });
 });

@@ -9,12 +9,11 @@ import type { Content } from '@google/genai';
 import {
   createDebugLogger,
   getStartupContextLength,
-  isSystemReminderContent,
 } from '@qwen-code/qwen-code-core';
 import { isSlashCommand } from './commandUtils.js';
 import {
+  getApiUserTextIndices,
   hasCompressionSummaryPair,
-  isCompressionContinuationBridge,
 } from '../../utils/apiHistoryUtils.js';
 
 const debugLogger = createDebugLogger('HISTORY_MAPPING');
@@ -39,50 +38,6 @@ export function isRealUserTurn(
   // Changes to slash-command classification must account for old sessions that
   // still rely on this inference.
   return !isSlashCommand(item.text) && !item.text.startsWith('?');
-}
-
-/**
- * Checks if a Content entry is a user-initiated text prompt
- * as opposed to a tool result (functionResponse).
- */
-function isUserTextContent(content: Content): boolean {
-  if (content.role !== 'user') return false;
-  if (!content.parts || content.parts.length === 0) return false;
-
-  const hasFunctionResponse = content.parts.some(
-    (part) => 'functionResponse' in part,
-  );
-  if (hasFunctionResponse) return false;
-
-  // Exclude pure <system-reminder> entries (the startup prelude and the
-  // mid-history MCP added-tool reminders). They are structural, not real user
-  // prompts; counting them here would shift the rewind truncation index and
-  // silently drop a real turn's context. A genuine user turn that merely has
-  // a per-turn reminder prepended still has a non-reminder prompt part, so it
-  // is NOT excluded.
-  if (isSystemReminderContent(content)) return false;
-
-  return content.parts.some((part) => 'text' in part && part.text);
-}
-
-function getRewindApiUserTextIndices(
-  apiHistory: Content[],
-  startIndex: number,
-  skipContinuationBridge: boolean,
-): number[] {
-  const indices: number[] = [];
-
-  for (let i = startIndex; i < apiHistory.length; i++) {
-    const content = apiHistory[i]!;
-    if (!isUserTextContent(content)) continue;
-    if (skipContinuationBridge && isCompressionContinuationBridge(content)) {
-      debugLogger.debug('Skipping compression continuation bridge at index', i);
-      continue;
-    }
-    indices.push(i);
-  }
-
-  return indices;
 }
 
 function getUiTurnOrdinals(
@@ -148,7 +103,7 @@ export function computeApiTruncationIndex(
     // summary user entry plus a fixed model acknowledgment. The remaining
     // API user-text entries are the uncompressed tail, so align that tail
     // against the end of the UI turn list instead of counting from the front.
-    const apiTailUserIndices = getRewindApiUserTextIndices(
+    const apiTailUserIndices = getApiUserTextIndices(
       apiHistory,
       startIndex + 2,
       true,
@@ -173,7 +128,7 @@ export function computeApiTruncationIndex(
     return startIndex;
   }
 
-  const apiUserTextIndices = getRewindApiUserTextIndices(
+  const apiUserTextIndices = getApiUserTextIndices(
     apiHistory,
     startIndex,
     false,
