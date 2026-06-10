@@ -12,6 +12,8 @@ const { spawnMock, platformMock, existsSyncMock } = vi.hoisted(() => ({
   existsSyncMock: vi.fn(() => false),
 }));
 
+const normalizePath = (filePath) => String(filePath).replaceAll('\\', '/');
+
 vi.mock('node:child_process', () => ({
   spawn: spawnMock,
 }));
@@ -33,10 +35,6 @@ vi.mock('node:fs', () => ({
   symlinkSync: vi.fn(),
   mkdirSync: vi.fn(),
 }));
-
-function normalizePath(value) {
-  return String(value).replaceAll('\\', '/');
-}
 
 describe('scripts/dev.js launcher', () => {
   const originalArgv = process.argv;
@@ -73,9 +71,11 @@ describe('scripts/dev.js launcher', () => {
 
     const [command, args, options] = spawnMock.mock.calls[0];
     expect(command).toBe('C:\\Program Files\\nodejs\\node.exe');
-    expect(normalizePath(args[0])).toContain('node_modules/tsx/dist/cli.mjs');
-    expect(normalizePath(args[1])).toContain('packages/cli/index.ts');
-    expect(args[2]).toBe('--help');
+    expect(args.map(normalizePath)).toEqual([
+      expect.stringContaining('node_modules/tsx/dist/cli.mjs'),
+      expect.stringContaining('packages/cli/index.ts'),
+      '--help',
+    ]);
     expect(options).toEqual(expect.objectContaining({ shell: false }));
   });
 
@@ -89,7 +89,9 @@ describe('scripts/dev.js launcher', () => {
 
     const [command, args, options] = spawnMock.mock.calls[0];
     expect(normalizePath(command)).toContain('tsx.cmd');
-    expect(normalizePath(args[0])).toContain('packages/cli/index.ts');
+    expect(args.map(normalizePath)).toEqual([
+      expect.stringContaining('packages/cli/index.ts'),
+    ]);
     expect(options).toEqual(expect.objectContaining({ shell: true }));
   });
 });
