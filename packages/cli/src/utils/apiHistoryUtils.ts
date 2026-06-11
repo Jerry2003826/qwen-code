@@ -16,6 +16,13 @@ import {
 const debugLogger = createDebugLogger('API_HISTORY_UTILS');
 const LEGACY_COMPRESSION_CONTINUATION_BRIDGE_PROMPT =
   'Continue with the prior task using the context above.';
+const POST_COMPACT_ATTACHMENT_TEXT_PREFIXES = [
+  'The following files were recently accessed before context was compacted.',
+  'Recently accessed file (full current content embedded):',
+  'Recent visual snapshots preserved from before context was compacted',
+  '<plan-mode-active>',
+  '<background-tasks>',
+] as const;
 
 /**
  * Checks whether a Content entry is the synthetic continuation bridge
@@ -55,6 +62,34 @@ export function hasModelTextPart(
   return content?.role === 'model' && hasTextPart(content, text);
 }
 
+function hasModelFunctionCallPart(content: Content | undefined): boolean {
+  return (
+    content?.role === 'model' &&
+    (content.parts?.some(
+      (part) => 'functionCall' in part && part.functionCall,
+    ) ??
+      false)
+  );
+}
+
+export function isPostCompactAttachmentContent(
+  content: Content | undefined,
+): boolean {
+  if (!content || content.role !== 'user') return false;
+
+  return (
+    content.parts?.some((part) => {
+      const text = 'text' in part ? part.text : undefined;
+      return (
+        typeof text === 'string' &&
+        POST_COMPACT_ATTACHMENT_TEXT_PREFIXES.some((prefix) =>
+          text.startsWith(prefix),
+        )
+      );
+    }) ?? false
+  );
+}
+
 /**
  * Checks if a Content entry is a user-initiated text prompt
  * as opposed to a tool result (functionResponse).
@@ -69,7 +104,10 @@ export function isApiUserTextContent(content: Content): boolean {
   if (hasFunctionResponse) return false;
   if (isSystemReminderContent(content)) return false;
 
-  return content.parts.some((part) => 'text' in part && part.text);
+  return content.parts.some(
+    (part) =>
+      'text' in part && typeof part.text === 'string' && part.text.length > 0,
+  );
 }
 
 export function hasCompressionSummaryPair(
@@ -82,6 +120,28 @@ export function hasCompressionSummaryPair(
     isApiUserTextContent(summary) &&
     hasModelTextPart(apiHistory[startIndex + 1], COMPRESSION_SUMMARY_MODEL_ACK)
   );
+}
+
+/**
+ * Returns the first API history index after the synthetic post-compression
+ * prelude. Compression always emits summary + ack, and may also emit one
+ * synthetic user attachment block plus a trailing model functionCall block.
+ */
+export function getCompressionTailStartIndex(
+  apiHistory: Content[],
+  startIndex: number,
+): number {
+  if (!hasCompressionSummaryPair(apiHistory, startIndex)) return startIndex;
+
+  let tailStartIndex = startIndex + 2;
+  if (isPostCompactAttachmentContent(apiHistory[tailStartIndex])) {
+    tailStartIndex += 1;
+    if (hasModelFunctionCallPart(apiHistory[tailStartIndex])) {
+      tailStartIndex += 1;
+    }
+  }
+
+  return tailStartIndex;
 }
 
 export function getApiUserTextIndices(

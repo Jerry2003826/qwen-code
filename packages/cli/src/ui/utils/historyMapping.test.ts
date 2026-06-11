@@ -337,6 +337,31 @@ describe('computeApiTruncationIndex', () => {
       expect(computeApiTruncationIndex(ui, 1, api)).toBe(-1);
     });
 
+    it('does not treat post-compact attachment restoration as a tail turn', () => {
+      const ui: HistoryItem[] = [
+        userItem(1),
+        geminiItem(2),
+        userItem(3),
+        geminiItem(4),
+        userItem(5),
+        geminiItem(6),
+      ];
+      const api: Content[] = [
+        userContent('compressed summary of prompt 1 and prompt 3'),
+        modelContent(COMPRESSION_SUMMARY_MODEL_ACK),
+        userContent(
+          'Recently accessed file (full current content embedded):\n\n' +
+            '## a.ts\n\n```ts\nexport const a = 1;\n```',
+        ),
+        functionCallContent(),
+        userContent('prompt 5'),
+        modelContent('response 5'),
+      ];
+
+      expect(computeApiTruncationIndex(ui, 3, api)).toBe(-1);
+      expect(computeApiTruncationIndex(ui, 5, api)).toBe(4);
+    });
+
     it('maps compressed tail turns after startup context', () => {
       const ui: HistoryItem[] = [
         userItem(1),

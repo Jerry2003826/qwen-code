@@ -18,9 +18,11 @@ import {
   hasModelTextPart,
   isApiUserTextContent,
   hasCompressionSummaryPair,
+  getCompressionTailStartIndex,
   getApiUserTextIndices,
   hasStartupContext,
   isCompressionContinuationBridge,
+  isPostCompactAttachmentContent,
 } from './apiHistoryUtils.js';
 
 const STARTUP_CONTEXT_MODEL_ACK = 'Got it. Thanks for the context!';
@@ -179,6 +181,69 @@ describe('hasCompressionSummaryPair', () => {
     ];
     expect(hasCompressionSummaryPair(history, 0)).toBe(false);
     expect(hasCompressionSummaryPair(history, 2)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// post-compact tail detection
+// ---------------------------------------------------------------------------
+
+describe('post-compact tail detection', () => {
+  it('detects post-compact attachment content by known synthetic prefixes', () => {
+    expect(
+      isPostCompactAttachmentContent(
+        userTextContent(
+          'Recently accessed file (full current content embedded):\n\n## a.ts',
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isPostCompactAttachmentContent(
+        userTextContent(
+          'Recent visual snapshots preserved from before context was compacted',
+        ),
+      ),
+    ).toBe(true);
+    expect(isPostCompactAttachmentContent(userTextContent('real prompt'))).toBe(
+      false,
+    );
+  });
+
+  it('returns the summary/ack boundary when there are no attachments', () => {
+    const history: Content[] = [
+      userTextContent('summary'),
+      modelTextContent(COMPRESSION_SUMMARY_MODEL_ACK),
+      userTextContent('tail turn'),
+    ];
+
+    expect(getCompressionTailStartIndex(history, 0)).toBe(2);
+  });
+
+  it('skips the post-compact attachment block and trailing functionCall', () => {
+    const history: Content[] = [
+      userTextContent('summary'),
+      modelTextContent(COMPRESSION_SUMMARY_MODEL_ACK),
+      userTextContent(
+        'Recently accessed file (full current content embedded):\n\n## a.ts',
+      ),
+      functionCallContent(),
+      userTextContent('tail turn'),
+    ];
+
+    expect(getCompressionTailStartIndex(history, 0)).toBe(4);
+  });
+
+  it('respects startup context offsets when skipping post-compact output', () => {
+    const history: Content[] = [
+      userTextContent('Environment context...'),
+      modelTextContent(STARTUP_CONTEXT_MODEL_ACK),
+      userTextContent('summary'),
+      modelTextContent(COMPRESSION_SUMMARY_MODEL_ACK),
+      userTextContent('<plan-mode-active>\nplan reminder\n</plan-mode-active>'),
+      userTextContent('tail turn'),
+    ];
+
+    expect(getCompressionTailStartIndex(history, 2)).toBe(5);
   });
 });
 

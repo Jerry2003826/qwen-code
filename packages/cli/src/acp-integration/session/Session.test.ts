@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import {
   computeInitialModelFacingUserTurnCountFromHistory,
   computeInitialTurnFromHistory,
+  computeMaxModelFacingUserTurnCountFromHistory,
   fireSessionPermissionDeniedForAutoMode,
   Session,
 } from './Session.js';
@@ -219,6 +220,55 @@ describe('computeInitialModelFacingUserTurnCountFromHistory', () => {
         'test-session-id',
       ),
     ).toBe(1);
+  });
+});
+
+describe('computeMaxModelFacingUserTurnCountFromHistory', () => {
+  it('restores historical model-facing peak from rewind records', () => {
+    expect(
+      computeMaxModelFacingUserTurnCountFromHistory(
+        [
+          chatRecord({
+            uuid: 'rewind-1',
+            type: 'system',
+            subtype: 'rewind',
+            systemPayload: {
+              truncatedCount: 3,
+              maxModelFacingUserTurnCount: 5,
+            },
+          }),
+          chatRecord({
+            uuid: 'rewind-2',
+            type: 'system',
+            subtype: 'rewind',
+            systemPayload: {
+              truncatedCount: 1,
+              maxModelFacingUserTurnCount: 4,
+            },
+          }),
+          chatRecord({
+            uuid: 'invalid-rewind',
+            type: 'system',
+            subtype: 'rewind',
+            systemPayload: {
+              truncatedCount: 1,
+              maxModelFacingUserTurnCount: Number.POSITIVE_INFINITY,
+            },
+          }),
+          chatRecord({
+            uuid: 'other-session-rewind',
+            sessionId: 'other-session-id',
+            type: 'system',
+            subtype: 'rewind',
+            systemPayload: {
+              truncatedCount: 1,
+              maxModelFacingUserTurnCount: 99,
+            },
+          }),
+        ],
+        'test-session-id',
+      ),
+    ).toBe(5);
   });
 });
 
@@ -476,6 +526,7 @@ describe('Session', () => {
       ];
       vi.mocked(mockChat.getHistory).mockReturnValue(history);
       vi.mocked(mockChat.getHistoryShallow).mockReturnValue(history);
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 2 });
 
       const result = session.rewindToTurn(1);
 
@@ -484,6 +535,7 @@ describe('Session', () => {
       expect(mockChat.stripThoughtsFromHistory).toHaveBeenCalled();
       expect(mockChatRecordingService.rewindRecording).toHaveBeenCalledWith(1, {
         truncatedCount: 2,
+        maxModelFacingUserTurnCount: 2,
       });
     });
 
@@ -756,6 +808,47 @@ describe('Session', () => {
       expect(mockChat.truncateHistory).not.toHaveBeenCalled();
     });
 
+    it('does not treat post-compact attachment restoration as an ACP rewind target', () => {
+      setSessionTurnCounters(session, {
+        turn: 3,
+        modelFacingUserTurnCount: 3,
+      });
+      vi.mocked(mockChat.getHistory).mockReturnValue([
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              text:
+                'Recently accessed file (full current content embedded):\n\n' +
+                '## a.ts\n\n```ts\nexport const a = 1;\n```',
+            },
+          ],
+        },
+        {
+          role: 'model',
+          parts: [{ functionCall: { name: 'read_file', args: {} } }],
+        } as unknown as Content,
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+      ]);
+
+      expect(() => session.rewindToTurn(1)).toThrow(
+        'Cannot rewind to the requested turn',
+      );
+      expect(mockChat.truncateHistory).not.toHaveBeenCalled();
+
+      expect(session.rewindToTurn(2)).toEqual({
+        targetTurnIndex: 2,
+        apiTruncateIndex: 4,
+      });
+      expect(mockChat.truncateHistory).toHaveBeenCalledWith(4);
+    });
+
     it('rejects unreachable user turns', () => {
       const history: Content[] = [{ role: 'user', parts: [{ text: 'first' }] }];
       vi.mocked(mockChat.getHistory).mockReturnValue(history);
@@ -930,6 +1023,24 @@ describe('Session', () => {
       expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
     });
 
+    it('rejects history snapshots whose counter is lower than non-compressed user entries', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 2 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'first' }] },
+        { role: 'model', parts: [{ text: 'first reply' }] },
+        { role: 'user', parts: [{ text: 'second' }] },
+      ];
+
+      expect(() =>
+        session.restoreHistory({
+          history,
+          modelFacingUserTurnCount: 1,
+        }),
+      ).toThrow('is less than visible model-facing user entries');
+      expect(mockChat.setHistory).not.toHaveBeenCalled();
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
     it('rejects compressed history snapshots whose counter is lower than the visible tail', () => {
       setSessionTurnCounters(session, { modelFacingUserTurnCount: 2 });
       const history: Content[] = [
@@ -1005,6 +1116,39 @@ describe('Session', () => {
           role: 'model',
           parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
         },
+        { role: 'user', parts: [{ text: 'third' }] },
+        { role: 'model', parts: [{ text: 'third reply' }] },
+        { role: 'user', parts: [{ text: 'fourth' }] },
+      ];
+
+      session.restoreHistory(history);
+
+      expect(mockChat.setHistory).toHaveBeenCalledWith(history);
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
+    it('does not count post-compact attachment restoration when restoring legacy history arrays', () => {
+      setSessionTurnCounters(session, { modelFacingUserTurnCount: 99 });
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'summary of first two turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        {
+          role: 'user',
+          parts: [
+            {
+              text:
+                'Recently accessed file (full current content embedded):\n\n' +
+                '## a.ts\n\n```ts\nexport const a = 1;\n```',
+            },
+          ],
+        },
+        {
+          role: 'model',
+          parts: [{ functionCall: { name: 'read_file', args: {} } }],
+        } as unknown as Content,
         { role: 'user', parts: [{ text: 'third' }] },
         { role: 'model', parts: [{ text: 'third reply' }] },
         { role: 'user', parts: [{ text: 'fourth' }] },
@@ -2135,6 +2279,47 @@ describe('Session', () => {
         false,
         expect.any(AbortSignal),
       );
+    });
+
+    it('restores max model-facing turn count from replayed rewind records', async () => {
+      await session.replayHistory([
+        chatRecord({
+          uuid: 'user-1',
+          message: { parts: [{ text: '1' }] },
+        }),
+        chatRecord({
+          uuid: 'user-2',
+          timestamp: '2026-05-17T07:27:20.446Z',
+          message: { parts: [{ text: '2' }] },
+        }),
+        chatRecord({
+          uuid: 'rewind-1',
+          timestamp: '2026-05-17T07:27:22.000Z',
+          type: 'system',
+          subtype: 'rewind',
+          systemPayload: {
+            truncatedCount: 4,
+            maxModelFacingUserTurnCount: 5,
+          },
+        }),
+      ]);
+
+      const history: Content[] = [
+        { role: 'user', parts: [{ text: 'summary of earlier turns' }] },
+        {
+          role: 'model',
+          parts: [{ text: core.COMPRESSION_SUMMARY_MODEL_ACK }],
+        },
+        { role: 'user', parts: [{ text: 'tail turn' }] },
+      ];
+
+      expect(() =>
+        session.restoreHistory({
+          history,
+          modelFacingUserTurnCount: 5,
+        }),
+      ).not.toThrow();
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(5);
     });
 
     describe('auto-compress', () => {
@@ -3444,6 +3629,106 @@ describe('Session', () => {
         });
       });
 
+      it('rolls back Stop-hook continuation count when a non-compressed send is stopped before streaming', async () => {
+        const messageBus = {
+          request: vi
+            .fn()
+            .mockResolvedValueOnce({
+              success: true,
+              output: {
+                decision: 'block',
+                reason: 'Continue after Stop hook',
+              },
+            })
+            .mockResolvedValueOnce({
+              success: true,
+              output: {},
+            }),
+        };
+        mockConfig.getMessageBus = vi.fn().mockReturnValue(messageBus);
+        mockConfig.getDisableAllHooks = vi.fn().mockReturnValue(false);
+        mockConfig.hasHooksForEvent = vi
+          .fn()
+          .mockImplementation((eventName: string) => eventName === 'Stop');
+        mockConfig.getSessionTokenLimit = vi.fn().mockReturnValue(100);
+        mockGeminiClient.tryCompressChat
+          .mockResolvedValueOnce({
+            originalTokenCount: 50,
+            newTokenCount: 50,
+            compressionStatus: core.CompressionStatus.NOOP,
+          })
+          .mockResolvedValueOnce({
+            originalTokenCount: 101,
+            newTokenCount: 101,
+            compressionStatus: core.CompressionStatus.NOOP,
+          });
+        mockChat.getHistory = vi
+          .fn()
+          .mockReturnValue([
+            { role: 'model', parts: [{ text: 'response text' }] },
+          ]);
+        mockChat.getLastModelMessageText = vi
+          .fn()
+          .mockReturnValue('response text');
+        mockChat.sendMessageStream = vi
+          .fn()
+          .mockResolvedValue(createEmptyStream());
+
+        await expect(
+          session.prompt({
+            sessionId: 'test-session-id',
+            prompt: [{ type: 'text', text: 'hello' }],
+          }),
+        ).resolves.toEqual({ stopReason: 'max_tokens' });
+
+        expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(1);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
+      });
+
+      it('rolls back Stop-hook continuation count when a non-compressed stream throws', async () => {
+        const messageBus = {
+          request: vi.fn().mockResolvedValueOnce({
+            success: true,
+            output: {
+              decision: 'block',
+              reason: 'Continue after Stop hook',
+            },
+          }),
+        };
+        mockConfig.getMessageBus = vi.fn().mockReturnValue(messageBus);
+        mockConfig.getDisableAllHooks = vi.fn().mockReturnValue(false);
+        mockConfig.hasHooksForEvent = vi
+          .fn()
+          .mockImplementation((eventName: string) => eventName === 'Stop');
+        mockChat.getHistory = vi
+          .fn()
+          .mockReturnValue([
+            { role: 'model', parts: [{ text: 'response text' }] },
+          ]);
+        mockChat.getLastModelMessageText = vi
+          .fn()
+          .mockReturnValue('response text');
+        mockChat.sendMessageStream = vi
+          .fn()
+          .mockResolvedValueOnce(createEmptyStream())
+          .mockResolvedValueOnce(
+            (async function* () {
+              yield { type: core.StreamEventType.CHUNK, value: {} };
+              throw new Error('stop continuation stream failed');
+            })(),
+          );
+
+        await expect(
+          session.prompt({
+            sessionId: 'test-session-id',
+            prompt: [{ type: 'text', text: 'hello' }],
+          }),
+        ).rejects.toThrow('stop continuation stream failed');
+
+        expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(2);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
+      });
+
       it('runs automatic compression before cron-fired ACP prompt sends', async () => {
         const scheduler = {
           size: 1,
@@ -3592,6 +3877,61 @@ describe('Session', () => {
 
         expect(mockGeminiClient.tryCompressChat).toHaveBeenCalledTimes(2);
         expect(tokenLimitDiagnosticCount()).toBe(diagnosticCountBefore);
+      });
+
+      it('rolls back cron prompt count when a non-compressed stream throws', async () => {
+        const scheduler = {
+          size: 1,
+          start: vi.fn((callback: (job: { prompt: string }) => void) => {
+            callback({ prompt: 'scheduled prompt' });
+          }),
+          stop: vi.fn(),
+          getExitSummary: vi.fn().mockReturnValue(undefined),
+        };
+        mockConfig.isCronEnabled = vi.fn().mockReturnValue(true);
+        mockConfig.getCronScheduler = vi.fn().mockReturnValue(scheduler);
+        mockGeminiClient.tryCompressChat
+          .mockResolvedValueOnce({
+            originalTokenCount: 50,
+            newTokenCount: 50,
+            compressionStatus: core.CompressionStatus.NOOP,
+          })
+          .mockResolvedValueOnce({
+            originalTokenCount: 50,
+            newTokenCount: 50,
+            compressionStatus: core.CompressionStatus.NOOP,
+          });
+        mockChat.sendMessageStream = vi
+          .fn()
+          .mockResolvedValueOnce(createEmptyStream())
+          .mockResolvedValueOnce(
+            (async function* () {
+              yield { type: core.StreamEventType.CHUNK, value: {} };
+              throw new Error('cron stream failed');
+            })(),
+          );
+
+        await session.prompt({
+          sessionId: 'test-session-id',
+          prompt: [{ type: 'text', text: 'hello' }],
+        });
+
+        await vi.waitFor(() => {
+          expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(2);
+        });
+        await vi.waitFor(() => {
+          expect(mockClient.sessionUpdate).toHaveBeenCalledWith({
+            sessionId: 'test-session-id',
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: {
+                type: 'text',
+                text: '[cron error] cron stream failed',
+              },
+            },
+          });
+        });
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
       });
 
       it('does not auto-compress slash commands handled without a model send', async () => {

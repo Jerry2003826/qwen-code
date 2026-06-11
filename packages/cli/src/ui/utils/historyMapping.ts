@@ -13,6 +13,7 @@ import {
 import { isSlashCommand } from './commandUtils.js';
 import {
   getApiUserTextIndices,
+  getCompressionTailStartIndex,
   hasCompressionSummaryPair,
 } from '../../utils/apiHistoryUtils.js';
 
@@ -100,12 +101,12 @@ export function computeApiTruncationIndex(
 
   if (hasCompressionSummaryPair(apiHistory, startIndex)) {
     // Compression replaces the oldest N UI turns with one synthetic
-    // summary user entry plus a fixed model acknowledgment. The remaining
-    // API user-text entries are the uncompressed tail, so align that tail
-    // against the end of the UI turn list instead of counting from the front.
+    // summary/attachment prelude. The remaining API user-text entries are
+    // the uncompressed tail, so align that tail against the end of the UI
+    // turn list instead of counting from the front.
     const apiTailUserIndices = getApiUserTextIndices(
       apiHistory,
-      startIndex + 2,
+      getCompressionTailStartIndex(apiHistory, startIndex),
       true,
     );
     const compressedTurnCount = Math.max(

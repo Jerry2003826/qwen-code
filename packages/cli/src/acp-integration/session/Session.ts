@@ -110,6 +110,7 @@ import { CommandKind } from '../../ui/commands/types.js';
 import { parseAcpModelOption } from '../../utils/acpModelUtils.js';
 import {
   getApiUserTextIndices,
+  getCompressionTailStartIndex,
   hasCompressionSummaryPair,
   isApiUserTextContent,
 } from '../../utils/apiHistoryUtils.js';
@@ -158,7 +159,11 @@ export interface HistorySnapshot {
 function computeVisibleModelFacingUserTurnCount(apiHistory: Content[]): number {
   const startIndex = getStartupContextLength(apiHistory);
   if (hasCompressionSummaryPair(apiHistory, startIndex)) {
-    return getApiUserTextIndices(apiHistory, startIndex + 2, true).length;
+    return getApiUserTextIndices(
+      apiHistory,
+      getCompressionTailStartIndex(apiHistory, startIndex),
+      true,
+    ).length;
   }
   return getApiUserTextIndices(apiHistory, startIndex, true).length;
 }
@@ -196,7 +201,7 @@ function validateModelFacingUserTurnCountForHistory(
   if (hasCompressionSummaryPair(history, startIndex)) {
     const visibleTailTurnCount = getApiUserTextIndices(
       history,
-      startIndex + 2,
+      getCompressionTailStartIndex(history, startIndex),
       true,
     ).length;
     if (validatedCount < visibleTailTurnCount) {
@@ -215,6 +220,12 @@ function validateModelFacingUserTurnCountForHistory(
   }
 
   const visibleTurnCount = computeVisibleModelFacingUserTurnCount(history);
+  if (validatedCount < visibleTurnCount) {
+    throw RequestError.invalidParams(
+      undefined,
+      `modelFacingUserTurnCount ${validatedCount} is less than visible model-facing user entries ${visibleTurnCount}`,
+    );
+  }
   if (validatedCount > visibleTurnCount) {
     throw RequestError.invalidParams(
       undefined,
@@ -293,6 +304,41 @@ export function computeInitialModelFacingUserTurnCountFromHistory(
     (record) =>
       record.sessionId === sessionId && isModelFacingUserPromptRecord(record),
   ).length;
+}
+
+export function computeMaxModelFacingUserTurnCountFromHistory(
+  records: ChatRecord[],
+  sessionId: string,
+): number {
+  let maxModelFacingUserTurnCount = 0;
+
+  for (const record of records) {
+    if (
+      record.sessionId !== sessionId ||
+      record.type !== 'system' ||
+      record.subtype !== 'rewind'
+    ) {
+      continue;
+    }
+
+    const count = (
+      record.systemPayload as { maxModelFacingUserTurnCount?: unknown }
+    )?.maxModelFacingUserTurnCount;
+    if (
+      typeof count === 'number' &&
+      Number.isInteger(count) &&
+      Number.isFinite(count) &&
+      count >= 0 &&
+      count <= Number.MAX_SAFE_INTEGER
+    ) {
+      maxModelFacingUserTurnCount = Math.max(
+        maxModelFacingUserTurnCount,
+        count,
+      );
+    }
+  }
+
+  return maxModelFacingUserTurnCount;
 }
 
 export async function fireSessionPermissionDeniedForAutoMode(
@@ -633,16 +679,22 @@ export class Session implements SessionContext {
       this.turn,
       computeInitialTurnFromHistory(records, this.config.getSessionId()),
     );
-    this.modelFacingUserTurnCount = Math.max(
-      this.modelFacingUserTurnCount,
+    const initialModelFacingUserTurnCount =
       computeInitialModelFacingUserTurnCountFromHistory(
         records,
         this.config.getSessionId(),
-      ),
+      );
+    this.modelFacingUserTurnCount = Math.max(
+      this.modelFacingUserTurnCount,
+      initialModelFacingUserTurnCount,
     );
     this.maxModelFacingUserTurnCount = Math.max(
       this.maxModelFacingUserTurnCount,
       this.modelFacingUserTurnCount,
+      computeMaxModelFacingUserTurnCountFromHistory(
+        records,
+        this.config.getSessionId(),
+      ),
     );
     await this.historyReplayer.replay(records);
   }
@@ -693,6 +745,7 @@ export class Session implements SessionContext {
 
     this.config.getChatRecordingService()?.rewindRecording(targetTurnIndex, {
       truncatedCount: Math.max(0, apiHistory.length - apiTruncateIndex),
+      maxModelFacingUserTurnCount: this.maxModelFacingUserTurnCount,
     });
 
     return { targetTurnIndex, apiTruncateIndex };
@@ -757,7 +810,7 @@ export class Session implements SessionContext {
     if (hasCompressionSummaryPair(apiHistory, startIndex)) {
       const apiTailUserIndices = getApiUserTextIndices(
         apiHistory,
-        startIndex + 2,
+        getCompressionTailStartIndex(apiHistory, startIndex),
         true,
       );
       if (this.modelFacingUserTurnCount < targetTurnIndex + 1) {
