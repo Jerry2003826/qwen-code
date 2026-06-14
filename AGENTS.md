@@ -200,3 +200,26 @@ Project artifacts live under `.qwen/`:
 | `.qwen/pr-reviews/`     | PR review notes                      |
 | `.qwen/investigations/` | Structured debugging journals        |
 | `.qwen/scripts/`        | Utility scripts                      |
+
+## Cursor Cloud specific instructions
+
+This is a Node.js (>=22) npm-workspaces monorepo for the `qwen` CLI agent. There
+is no database or standalone backend — the only external runtime dependency for
+real agent runs is an LLM endpoint.
+
+- **Dependency install gotcha:** the root `prepare` script runs `husky`,
+  `npm run build`, and `npm run bundle` automatically after `npm install`. A
+  plain `npm install` therefore also builds + bundles (~1–2 min). This is
+  expected; no separate build step is needed afterward.
+- **Run/build/lint/test commands** are documented above (`npm run dev`,
+  `npm run build`, `npm run lint`, `npm run typecheck`, and per-package
+  `npx vitest run`). Run unit tests from inside the package dir, not the root.
+- **No API key is provisioned in this environment.** To exercise the agent loop
+  end-to-end without real credentials, point the CLI at any local
+  OpenAI-compatible endpoint via `~/.qwen/settings.json` (`modelProviders.openai`
+  with `baseUrl`, `selectedType: "openai"`, `model.name`) or the env vars
+  `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`. A trivial mock server
+  that implements `POST /v1/chat/completions` (SSE streaming) and `GET /v1/models`
+  is sufficient to verify the full request→stream→render pipeline.
+- `npm run dev` prints a harmless "React DevTools server is not running" notice;
+  it is not an error.
