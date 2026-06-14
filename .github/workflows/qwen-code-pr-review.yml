@@ -31,7 +31,7 @@ on:
       timeout_minutes:
         description: 'Review timeout in minutes'
         required: false
-        default: '60'
+        default: '90'
         type: 'number'
 
 concurrency:
@@ -138,7 +138,7 @@ jobs:
        github.event.pull_request.author_association == 'MEMBER' ||
        github.event.pull_request.author_association == 'COLLABORATOR')
     runs-on: 'ubuntu-latest'
-    # Configured in repo settings with a 10-minute wait timer.
+    # Configured in repo settings with a 30-minute wait timer.
     environment:
       name: 'qwen-pr-review-delay'
       deployment: false
@@ -256,7 +256,7 @@ jobs:
         (github.event.review.author_association == 'OWNER' ||
          github.event.review.author_association == 'MEMBER' ||
          github.event.review.author_association == 'COLLABORATOR')))
-    timeout-minutes: 60
+    timeout-minutes: 90
     runs-on: ['self-hosted', 'linux', 'x64', 'ecs-qwen']
     permissions:
       contents: 'read'
@@ -303,7 +303,7 @@ jobs:
             exit 1
           fi
 
-          TIMEOUT_MINUTES="${{ github.event.inputs.timeout_minutes || '60' }}"
+          TIMEOUT_MINUTES="${{ github.event.inputs.timeout_minutes || '90' }}"
 
           {
             echo "should_run=true"
@@ -361,8 +361,8 @@ jobs:
           if [ "$TIMEOUT_MINUTES" -le 5 ]; then
             fail "timeout_minutes must be greater than 5"
           fi
-          if [ "$TIMEOUT_MINUTES" -gt 60 ]; then
-            fail "timeout_minutes must not exceed the 60 minute job timeout"
+          if [ "$TIMEOUT_MINUTES" -gt 90 ]; then
+            fail "timeout_minutes must not exceed the 90 minute job timeout"
           fi
 
           if ! PR_STATE="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json state --jq '.state')"; then
@@ -411,6 +411,29 @@ jobs:
           if [ ! -s "$LOG_PATH" ]; then
             fail "Qwen review completed but produced no output."
           fi
+
+          # qwen can exit 0 even when the run aborted mid-review (e.g. the model
+          # connection dropped before the review was posted). In that case the
+          # final stream-json `result` event still renders the error inline and
+          # carries subtype=success / is_error=false, so the checks above all
+          # pass and the job goes green without ever posting a comment. Inspect
+          # the terminal `result` event explicitly and treat an errored or
+          # aborted run as a failure so the fallback-comment step runs.
+          RESULT_LINE="$(grep '"type":"result"' "$LOG_PATH" | tail -n1 || true)"
+          if [ -z "$RESULT_LINE" ]; then
+            fail "Qwen review produced no result event (run aborted before completion)."
+          fi
+          RESULT_IS_ERROR="$(printf '%s' "$RESULT_LINE" | jq -r '.is_error // false')"
+          RESULT_SUBTYPE="$(printf '%s' "$RESULT_LINE" | jq -r '.subtype // ""')"
+          RESULT_TEXT="$(printf '%s' "$RESULT_LINE" | jq -r '.result // ""')"
+          if [ "$RESULT_IS_ERROR" = "true" ] || [ "$RESULT_SUBTYPE" != "success" ]; then
+            fail "Qwen review ended in an error result (subtype=${RESULT_SUBTYPE}, is_error=${RESULT_IS_ERROR})."
+          fi
+          case "$RESULT_TEXT" in
+            *"[API Error"*)
+              fail "Qwen review aborted with an API error before posting comments."
+              ;;
+          esac
 
       - name: 'Post fallback comment on failure'
         if: |-
