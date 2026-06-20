@@ -143,6 +143,7 @@ export type {
 } from './tools/shell.js';
 export type { SkillTool, SkillParams } from './tools/skill.js';
 export type { AgentTool, AgentParams } from './tools/agent/agent.js';
+export { FORK_SUBAGENT_TYPE } from './tools/agent/fork-subagent.js';
 export type {
   WorkflowTool,
   WorkflowParams,
@@ -186,6 +187,27 @@ export * from './services/sessionRecap.js';
 export * from './services/sessionService.js';
 export * from './services/sessionTitle.js';
 export * from './services/sleepInhibitor.js';
+// Named exports keep @internal test helpers out of the barrel.
+export {
+  apiResponseEventToTokenUsageRecord,
+  exportTokenUsageSummary,
+  formatTokenUsageSummaryAsCsv,
+  formatTokenUsageSummaryAsJson,
+  getTokenUsageFilePath,
+  queryTokenUsage,
+  recordTokenUsageFromApiResponse,
+  recordTokenUsageFromApiResponseBestEffort,
+} from './services/tokenUsageService.js';
+export type {
+  TokenUsageExportFormat,
+  TokenUsageExportOptions,
+  TokenUsageGroupSummary,
+  TokenUsagePeriod,
+  TokenUsageQuery,
+  TokenUsageRecord,
+  TokenUsageSummary,
+  TokenUsageTotals,
+} from './services/tokenUsageService.js';
 export * from './services/worktreeSessionService.js';
 export * from './services/chatCompressionConstants.js';
 export {
@@ -197,9 +219,11 @@ export {
 export * from './services/shellExecutionService.js';
 export * from './services/monitorRegistry.js';
 export * from './services/backgroundShellRegistry.js';
+export * from './agents/workflow-run-registry.js';
 export * from './services/toolUseSummary.js';
 export * from './services/usageHistoryService.js';
 export * from './utils/bareMode.js';
+export * from './utils/toolResultDisplayCompaction.js';
 
 // ============================================================================
 // Managed Auto-Memory
