@@ -4472,6 +4472,18 @@ describe('QwenAgent MCP SSE/HTTP support', () => {
       ).rejects.toThrow('Invalid or missing history');
     }
 
+    for (const modelFacingUserTurnCount of [NaN, -1, 1.5]) {
+      await expect(
+        agent.extMethod('restoreSessionHistory', {
+          sessionId,
+          history: {
+            history: [{ role: 'user', parts: [{ text: 'hello' }] }],
+            modelFacingUserTurnCount,
+          },
+        }),
+      ).rejects.toThrow('Invalid or missing history');
+    }
+
     expect(lastSessionMock?.restoreHistory).not.toHaveBeenCalled();
 
     mockConnectionState.resolve();

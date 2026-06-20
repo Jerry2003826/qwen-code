@@ -22,6 +22,7 @@ import {
   AuthType,
   SYSTEM_REMINDER_OPEN,
   SYSTEM_REMINDER_CLOSE,
+  buildApiHistoryFromConversation,
 } from '@qwen-code/qwen-code-core';
 import * as core from '@qwen-code/qwen-code-core';
 import { SettingScope } from '../../config/settings.js';
@@ -287,6 +288,31 @@ function createStreamWithChunks(
     for (const chunk of chunks) {
       yield chunk;
     }
+  })();
+}
+
+function createHistoryCommittingSendMessageStream(
+  chat: GeminiChat,
+  streamFactory: (
+    message: Part[],
+  ) => AsyncIterable<{ type: unknown; value: unknown }>,
+) {
+  return vi.fn(
+    async (_model: string, request: { message: Part[] }, _promptId: string) => {
+      chat.addHistory({ role: 'user', parts: request.message });
+      return streamFactory(request.message) as AsyncGenerator<
+        { type: unknown; value: unknown },
+        void,
+        unknown
+      >;
+    },
+  );
+}
+
+function createFailingDispatchedStream(errorMessage: string) {
+  return (async function* () {
+    yield { type: core.StreamEventType.CHUNK, value: {} };
+    throw new Error(errorMessage);
   })();
 }
 
@@ -706,6 +732,56 @@ describe('Session', () => {
       expect(result).toEqual({ targetTurnIndex: 2, apiTruncateIndex: 2 });
       expect(mockChat.truncateHistory).toHaveBeenCalledWith(2);
       expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+    });
+
+    it('matches rewind mapping after replayHistory when slash commands were persisted', async () => {
+      const records = [
+        chatRecord({
+          uuid: 'user-1',
+          message: { role: 'user', parts: [{ text: 'first' }] },
+        }),
+        chatRecord({
+          uuid: 'assistant-1',
+          type: 'assistant',
+          message: { role: 'model', parts: [{ text: 'first reply' }] },
+        }),
+        chatRecord({
+          uuid: 'slash-1',
+          message: { role: 'user', parts: [{ text: '/help' }] },
+        }),
+        chatRecord({
+          uuid: 'user-2',
+          message: { role: 'user', parts: [{ text: 'second' }] },
+        }),
+        chatRecord({
+          uuid: 'assistant-2',
+          type: 'assistant',
+          message: { role: 'model', parts: [{ text: 'second reply' }] },
+        }),
+      ];
+      const resumedHistory = buildApiHistoryFromConversation({
+        sessionId: 'test-session-id',
+        projectHash: 'test-project-hash',
+        startTime: '2024-01-01T00:00:00Z',
+        lastUpdated: '2024-01-01T00:00:00Z',
+        messages: records,
+      });
+      expect(resumedHistory).toEqual([
+        { role: 'user', parts: [{ text: 'first' }] },
+        { role: 'model', parts: [{ text: 'first reply' }] },
+        { role: 'user', parts: [{ text: 'second' }] },
+        { role: 'model', parts: [{ text: 'second reply' }] },
+      ]);
+
+      vi.mocked(mockChat.getHistory).mockReturnValue(resumedHistory);
+      vi.mocked(mockChat.getHistoryShallow).mockReturnValue(resumedHistory);
+      await session.replayHistory(records);
+
+      expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
+      expect(session.rewindToTurn(1)).toEqual({
+        targetTurnIndex: 1,
+        apiTruncateIndex: 2,
+      });
     });
 
     it('keeps compressed tail reachable after rewind and resend', async () => {
@@ -3142,12 +3218,10 @@ describe('Session', () => {
           newTokenCount: 450,
           compressionStatus: core.CompressionStatus.COMPRESSED,
         });
-        mockChat.sendMessageStream = vi.fn().mockResolvedValue(
-          (async function* () {
-            yield { type: core.StreamEventType.CHUNK, value: {} };
-            throw new Error('stream failed');
-          })(),
-        );
+        mockChat.sendMessageStream = createHistoryCommittingSendMessageStream(
+          mockChat,
+          () => createFailingDispatchedStream('stream failed'),
+        ) as unknown as typeof mockChat.sendMessageStream;
 
         await expect(
           session.prompt({
@@ -3157,6 +3231,23 @@ describe('Session', () => {
         ).rejects.toThrow('stream failed');
 
         expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
+      });
+
+      it('keeps model-facing turn count when a dispatched non-compressed stream throws', async () => {
+        mockChat.sendMessageStream = createHistoryCommittingSendMessageStream(
+          mockChat,
+          () => createFailingDispatchedStream('stream failed'),
+        ) as unknown as typeof mockChat.sendMessageStream;
+
+        await expect(
+          session.prompt({
+            sessionId: 'test-session-id',
+            prompt: [{ type: 'text', text: 'hello' }],
+          }),
+        ).rejects.toThrow('stream failed');
+
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
+        expect(mockChat.addHistory).toHaveBeenCalled();
       });
 
       it('stops without throwing when the token-limit diagnostic fails', async () => {
@@ -3977,7 +4068,7 @@ describe('Session', () => {
         expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
       });
 
-      it('rolls back Stop-hook continuation count when a non-compressed stream throws', async () => {
+      it('keeps Stop-hook continuation count when a dispatched non-compressed stream throws', async () => {
         const messageBus = {
           request: vi.fn().mockResolvedValueOnce({
             success: true,
@@ -4003,12 +4094,12 @@ describe('Session', () => {
         mockChat.sendMessageStream = vi
           .fn()
           .mockResolvedValueOnce(createEmptyStream())
-          .mockResolvedValueOnce(
-            (async function* () {
-              yield { type: core.StreamEventType.CHUNK, value: {} };
-              throw new Error('stop continuation stream failed');
-            })(),
-          );
+          .mockImplementation(async (_model, request: { message: Part[] }) => {
+            mockChat.addHistory({ role: 'user', parts: request.message });
+            return createFailingDispatchedStream(
+              'stop continuation stream failed',
+            );
+          });
 
         await expect(
           session.prompt({
@@ -4018,7 +4109,7 @@ describe('Session', () => {
         ).rejects.toThrow('stop continuation stream failed');
 
         expect(mockChat.sendMessageStream).toHaveBeenCalledTimes(2);
-        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
       });
 
       it('runs automatic compression before cron-fired ACP prompt sends', async () => {
@@ -4173,7 +4264,7 @@ describe('Session', () => {
         expect(tokenLimitDiagnosticCount()).toBe(diagnosticCountBefore);
       });
 
-      it('rolls back cron prompt count when a non-compressed stream throws', async () => {
+      it('keeps cron prompt count when a dispatched non-compressed stream throws', async () => {
         const scheduler = {
           size: 1,
           hasPendingWork: true,
@@ -4199,12 +4290,10 @@ describe('Session', () => {
         mockChat.sendMessageStream = vi
           .fn()
           .mockResolvedValueOnce(createEmptyStream())
-          .mockResolvedValueOnce(
-            (async function* () {
-              yield { type: core.StreamEventType.CHUNK, value: {} };
-              throw new Error('cron stream failed');
-            })(),
-          );
+          .mockImplementation(async (_model, request: { message: Part[] }) => {
+            mockChat.addHistory({ role: 'user', parts: request.message });
+            return createFailingDispatchedStream('cron stream failed');
+          });
 
         await session.prompt({
           sessionId: 'test-session-id',
@@ -4226,7 +4315,7 @@ describe('Session', () => {
             },
           });
         });
-        expect(getSessionModelFacingUserTurnCount(session)).toBe(1);
+        expect(getSessionModelFacingUserTurnCount(session)).toBe(2);
       });
 
       it('does not auto-compress slash commands handled without a model send', async () => {
@@ -6023,22 +6112,20 @@ describe('Session', () => {
         isOutputMarkdown: true,
       });
 
-      const parts = await (session as unknown as ToolCallInternals).runToolCalls(
-        new AbortController().signal,
-        'prompt-dup',
-        [
-          {
-            id: 'dup_id_0001',
-            name: 'read_file',
-            args: { file_path: 'a.ts' },
-          },
-          {
-            id: 'dup_id_0001',
-            name: 'read_file',
-            args: { file_path: 'b.ts' },
-          },
-        ],
-      );
+      const parts = await (
+        session as unknown as ToolCallInternals
+      ).runToolCalls(new AbortController().signal, 'prompt-dup', [
+        {
+          id: 'dup_id_0001',
+          name: 'read_file',
+          args: { file_path: 'a.ts' },
+        },
+        {
+          id: 'dup_id_0001',
+          name: 'read_file',
+          args: { file_path: 'b.ts' },
+        },
+      ]);
 
       expect(execute).toHaveBeenCalledOnce();
       expect(parts.map((part) => part.functionResponse?.id)).toEqual([
@@ -6068,22 +6155,20 @@ describe('Session', () => {
         isOutputMarkdown: true,
       });
 
-      const parts = await (session as unknown as ToolCallInternals).runToolCalls(
-        new AbortController().signal,
-        'prompt-empty',
-        [
-          {
-            id: '',
-            name: 'read_file',
-            args: { file_path: 'a.ts' },
-          },
-          {
-            id: '',
-            name: 'read_file',
-            args: { file_path: 'b.ts' },
-          },
-        ],
-      );
+      const parts = await (
+        session as unknown as ToolCallInternals
+      ).runToolCalls(new AbortController().signal, 'prompt-empty', [
+        {
+          id: '',
+          name: 'read_file',
+          args: { file_path: 'a.ts' },
+        },
+        {
+          id: '',
+          name: 'read_file',
+          args: { file_path: 'b.ts' },
+        },
+      ]);
 
       expect(execute).toHaveBeenCalledTimes(2);
       expect(parts).toHaveLength(2);

@@ -852,16 +852,14 @@ export class Session implements SessionContext {
 
     fileHistoryService.restoreFromSnapshots(survivingSnapshots);
 
-    this.config
-      .getChatRecordingService()
-      ?.rewindRecording(
-        targetTurnIndex,
-        {
-          truncatedCount: Math.max(0, apiHistory.length - apiTruncateIndex),
-          maxModelFacingUserTurnCount: this.maxModelFacingUserTurnCount,
-        },
-        survivingSnapshots,
-      );
+    this.config.getChatRecordingService()?.rewindRecording(
+      targetTurnIndex,
+      {
+        truncatedCount: Math.max(0, apiHistory.length - apiTruncateIndex),
+        maxModelFacingUserTurnCount: this.maxModelFacingUserTurnCount,
+      },
+      survivingSnapshots,
+    );
 
     return { targetTurnIndex, apiTruncateIndex };
   }
@@ -1429,6 +1427,7 @@ export class Session implements SessionContext {
                 const streamStartTime = Date.now();
                 let recordedModelFacingTurn = false;
                 let sendHistoryCompressed = false;
+                let sendDispatched = false;
 
                 try {
                   recordedModelFacingTurn =
@@ -1455,6 +1454,7 @@ export class Session implements SessionContext {
                     );
                     return { stopReason: sendResult.stopReason };
                   }
+                  sendDispatched = true;
                   const responseStream = sendResult.responseStream;
                   nextMessage = null;
 
@@ -1497,7 +1497,7 @@ export class Session implements SessionContext {
                     }
                   }
                 } catch (error) {
-                  if (!sendHistoryCompressed) {
+                  if (!sendDispatched && !sendHistoryCompressed) {
                     this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
                   }
                   // Only explicit user cancellation maps to a normal
@@ -1729,6 +1729,7 @@ export class Session implements SessionContext {
           const streamStartTime = Date.now();
           let recordedModelFacingTurn = false;
           let sendHistoryCompressed = false;
+          let sendDispatched = false;
 
           try {
             recordedModelFacingTurn =
@@ -1754,6 +1755,7 @@ export class Session implements SessionContext {
               );
               return { stopReason: continueSendResult.stopReason };
             }
+            sendDispatched = true;
             const continueResponseStream = continueSendResult.responseStream;
             nextMessage = null;
 
@@ -1793,8 +1795,7 @@ export class Session implements SessionContext {
               }
             }
           } catch (error) {
-            // Rollback model-facing turn count to prevent counter drift on exceptions
-            if (!sendHistoryCompressed) {
+            if (!sendDispatched && !sendHistoryCompressed) {
               this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
             }
 
@@ -1946,7 +1947,11 @@ export class Session implements SessionContext {
       } catch (compressionError) {
         if (abortSignal.aborted || this.#isAbortError(compressionError)) {
           debugLogger.debug(`Auto-compression aborted for prompt ${promptId}`);
-          return { responseStream: null, stopReason: 'cancelled' };
+          return {
+            responseStream: null,
+            stopReason: 'cancelled',
+            historyCompressed,
+          };
         }
         debugLogger.warn(
           `Auto-compression failed for prompt ${promptId}; proceeding without compression: ` +
@@ -1957,7 +1962,11 @@ export class Session implements SessionContext {
 
     if (abortSignal.aborted) {
       debugLogger.debug(`Auto-compression aborted for prompt ${promptId}`);
-      return { responseStream: null, stopReason: 'cancelled' };
+      return {
+        responseStream: null,
+        stopReason: 'cancelled',
+        historyCompressed,
+      };
     }
 
     if (!compressionInfo) {
@@ -1997,7 +2006,11 @@ export class Session implements SessionContext {
       debugLogger.debug(
         `Send aborted after compression diagnostic for prompt ${promptId}`,
       );
-      return { responseStream: null, stopReason: 'cancelled' };
+      return {
+        responseStream: null,
+        stopReason: 'cancelled',
+        historyCompressed,
+      };
     }
 
     const responseStream = await this.#getCurrentChat().sendMessageStream(
@@ -2379,6 +2392,7 @@ export class Session implements SessionContext {
                 const streamStartTime = Date.now();
                 let recordedModelFacingTurn = false;
                 let sendHistoryCompressed = false;
+                let sendDispatched = false;
 
                 try {
                   recordedModelFacingTurn =
@@ -2408,54 +2422,61 @@ export class Session implements SessionContext {
                     }
                     return;
                   }
+                  sendDispatched = true;
                   const responseStream = sendResult.responseStream;
                   nextMessage = null;
 
-                for await (const resp of responseStream) {
-                  if (ac.signal.aborted) return;
+                  for await (const resp of responseStream) {
+                    if (ac.signal.aborted) return;
 
-                  if (
-                    resp.type === StreamEventType.CHUNK &&
-                    resp.value.candidates &&
-                    resp.value.candidates.length > 0
-                  ) {
-                    const candidate = resp.value.candidates[0];
-                    for (const part of candidate.content?.parts ?? []) {
-                      if (!part.text) continue;
-                      this.messageEmitter.emitMessage(
-                        part.text,
-                        'assistant',
-                        part.thought,
-                      );
+                    if (
+                      resp.type === StreamEventType.CHUNK &&
+                      resp.value.candidates &&
+                      resp.value.candidates.length > 0
+                    ) {
+                      const candidate = resp.value.candidates[0];
+                      for (const part of candidate.content?.parts ?? []) {
+                        if (!part.text) continue;
+                        this.messageEmitter.emitMessage(
+                          part.text,
+                          'assistant',
+                          part.thought,
+                        );
+                      }
+                    }
+
+                    if (
+                      resp.type === StreamEventType.CHUNK &&
+                      resp.value.usageMetadata
+                    ) {
+                      usageMetadata = resp.value.usageMetadata;
+                    }
+
+                    if (
+                      resp.type === StreamEventType.CHUNK &&
+                      resp.value.functionCalls
+                    ) {
+                      functionCalls.push(...resp.value.functionCalls);
                     }
                   }
 
-                  if (
-                    resp.type === StreamEventType.CHUNK &&
-                    resp.value.usageMetadata
-                  ) {
-                    usageMetadata = resp.value.usageMetadata;
+                  if (usageMetadata) {
+                    this.#recordPromptTokenCount(usageMetadata);
+                    if (this.messageRewriter) {
+                      this.messageRewriter.flushTurn(ac.signal);
+                    }
+                    const durationMs = Date.now() - streamStartTime;
+                    await this.messageEmitter.emitUsageMetadata(
+                      usageMetadata,
+                      '',
+                      durationMs,
+                    );
                   }
-
-                  if (
-                    resp.type === StreamEventType.CHUNK &&
-                    resp.value.functionCalls
-                  ) {
-                    functionCalls.push(...resp.value.functionCalls);
+                } catch (error) {
+                  if (!sendDispatched && !sendHistoryCompressed) {
+                    this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
                   }
-                }
-
-                if (usageMetadata) {
-                  this.#recordPromptTokenCount(usageMetadata);
-                  if (this.messageRewriter) {
-                    this.messageRewriter.flushTurn(ac.signal);
-                  }
-                  const durationMs = Date.now() - streamStartTime;
-                  await this.messageEmitter.emitUsageMetadata(
-                    usageMetadata,
-                    '',
-                    durationMs,
-                  );
+                  throw error;
                 }
 
                 if (functionCalls.length > 0) {
@@ -2471,12 +2492,6 @@ export class Session implements SessionContext {
                       ...(await this.#drainMidTurnUserMessages()),
                     ],
                   };
-                }
-                } catch (error) {
-                  if (!sendHistoryCompressed) {
-                    this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
-                  }
-                  throw error;
                 }
               }
             } catch (error) {
@@ -2690,65 +2705,85 @@ export class Session implements SessionContext {
               null;
             let responseText = '';
             const streamStartTime = Date.now();
+            let recordedModelFacingTurn = false;
+            let sendHistoryCompressed = false;
+            let sendDispatched = false;
 
-            const sendResult = await this.#sendMessageStreamWithAutoCompression(
-              promptId,
-              nextMessage.parts ?? [],
-              ac.signal,
-            );
-            if (!sendResult.responseStream) {
-              this.#preserveUnsentMessageHistory(
-                nextMessage,
-                sendResult.stopReason === 'cancelled',
-              );
-              await this.#emitBackgroundNotificationEndTurn(
-                sendResult.stopReason,
-              );
-              return;
-            }
-
-            const responseStream = sendResult.responseStream;
-            nextMessage = null;
-
-            for await (const resp of responseStream) {
-              if (ac.signal.aborted) {
-                await this.#emitBackgroundNotificationEndTurn('cancelled');
+            try {
+              recordedModelFacingTurn =
+                this.#recordModelFacingUserTurn(nextMessage);
+              const sendResult =
+                await this.#sendMessageStreamWithAutoCompression(
+                  promptId,
+                  nextMessage.parts ?? [],
+                  ac.signal,
+                );
+              sendHistoryCompressed = !!sendResult.historyCompressed;
+              if (!sendResult.responseStream) {
+                if (
+                  sendResult.stopReason !== 'cancelled' &&
+                  !sendHistoryCompressed
+                ) {
+                  this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+                }
+                this.#preserveUnsentMessageHistory(
+                  nextMessage,
+                  sendResult.stopReason === 'cancelled',
+                );
+                await this.#emitBackgroundNotificationEndTurn(
+                  sendResult.stopReason,
+                );
                 return;
               }
+              sendDispatched = true;
+              const responseStream = sendResult.responseStream;
+              nextMessage = null;
 
-              if (
-                resp.type === StreamEventType.CHUNK &&
-                resp.value.candidates &&
-                resp.value.candidates.length > 0
-              ) {
-                const candidate = resp.value.candidates[0];
-                for (const part of candidate.content?.parts ?? []) {
-                  if (!part.text) continue;
-                  if (part.thought) {
-                    await this.messageEmitter.emitMessage(
-                      part.text,
-                      'assistant',
-                      true,
-                    );
-                  } else {
-                    responseText += part.text;
+              for await (const resp of responseStream) {
+                if (ac.signal.aborted) {
+                  await this.#emitBackgroundNotificationEndTurn('cancelled');
+                  return;
+                }
+
+                if (
+                  resp.type === StreamEventType.CHUNK &&
+                  resp.value.candidates &&
+                  resp.value.candidates.length > 0
+                ) {
+                  const candidate = resp.value.candidates[0];
+                  for (const part of candidate.content?.parts ?? []) {
+                    if (!part.text) continue;
+                    if (part.thought) {
+                      await this.messageEmitter.emitMessage(
+                        part.text,
+                        'assistant',
+                        true,
+                      );
+                    } else {
+                      responseText += part.text;
+                    }
                   }
                 }
-              }
 
-              if (
-                resp.type === StreamEventType.CHUNK &&
-                resp.value.usageMetadata
-              ) {
-                usageMetadata = resp.value.usageMetadata;
-              }
+                if (
+                  resp.type === StreamEventType.CHUNK &&
+                  resp.value.usageMetadata
+                ) {
+                  usageMetadata = resp.value.usageMetadata;
+                }
 
-              if (
-                resp.type === StreamEventType.CHUNK &&
-                resp.value.functionCalls
-              ) {
-                functionCalls.push(...resp.value.functionCalls);
+                if (
+                  resp.type === StreamEventType.CHUNK &&
+                  resp.value.functionCalls
+                ) {
+                  functionCalls.push(...resp.value.functionCalls);
+                }
               }
+            } catch (error) {
+              if (!sendDispatched && !sendHistoryCompressed) {
+                this.#rollbackModelFacingUserTurn(recordedModelFacingTurn);
+              }
+              throw error;
             }
 
             if (responseText.length > 0) {
