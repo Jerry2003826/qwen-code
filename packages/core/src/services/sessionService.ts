@@ -1431,7 +1431,11 @@ function isModelFacingUserRecordForApiHistory(record: ChatRecord): boolean {
 function appendApiHistoryRecord(history: Content[], record: ChatRecord): void {
   if (!record.message) return;
 
-  if (record.type === 'user' && !isModelFacingUserRecordForApiHistory(record)) {
+  if (
+    record.type === 'user' &&
+    record.subtype !== 'mid_turn_user_message' &&
+    !isModelFacingUserRecordForApiHistory(record)
+  ) {
     return;
   }
 
